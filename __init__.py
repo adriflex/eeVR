@@ -116,6 +116,9 @@ class RenderAnimation(Operator):
                     self.clean(context)
                     raise e
                 print(f"eeVR: frame {context.scene.frame_current} done in {round(time.time() - now, 2)} seconds")
+
+                # Advance to next frame
+                context.scene.frame_set(context.scene.frame_current + context.scene.frame_step)
                 self.timer = wm.event_timer_add(0.5, window=context.window)
             else:
                 self.clean(context)

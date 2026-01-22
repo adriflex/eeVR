@@ -369,7 +369,7 @@ class Renderer:
          + ('' if self.no_side_images else fetch_sides + (blend_seam_sides if vmargin > 0.0 else ''))\
          + ('' if self.no_back_image else (fetch_back % ((blend_seam_back_h if hmargin > 0.0 else '') + (blend_seam_back_v if vmargin > 0.0 else ''))))\
          + (fetch_front % ((blend_seam_front_h if hmargin > 0.0 or ext_front_view else '') + (blend_seam_front_v if vmargin > 0.0 or ext_front_view else '')))\
-         + '}'
+         + '    fragColor.a = 1.0;\n}'
 
         shader_info = gpu.types.GPUShaderCreateInfo()
         vert_out = gpu.types.GPUStageInterfaceInfo("eevr")
@@ -385,8 +385,7 @@ class Renderer:
         shader_info.sampler(5, 'FLOAT_2D', "cubeFrontImage")
         shader_info.fragment_out(0, 'VEC4', "fragColor")
         shader_info.vertex_source(vertex_shader)
-        # Force alpha to 1.0 to avoid transparency artifacts
-        shader_info.fragment_source(frag_shader.replace('}', '    fragColor.a = 1.0;\n}'))
+        shader_info.fragment_source(frag_shader)
         self.shader = gpu.shader.create_from_info(shader_info)
 
         # Set the image name to the current time
@@ -541,10 +540,9 @@ class Renderer:
             batch.draw(self.shader)
 
             # Read the resulting pixels into a buffer
-            buffer = fb.read_color(0, 0, width, height, 4, 0, 'FLOAT')
-            # In Blender 4.x/5.x, buffer might be multi-dimensional or have a weird structure.
-            # to_list() is safe and returns a flat list of floats.
-            buffer = buffer.to_list()
+            # Pre-allocate a flat buffer to ensure compatibility with foreach_set in Blender 4.0+
+            buffer = gpu.types.Buffer('FLOAT', (width * height * 4,))
+            fb.read_color(0, 0, width, height, 4, 0, 'FLOAT', buffer)
 
         # Unload the offscreen texture
         offscreen.free()
@@ -769,8 +767,6 @@ class Renderer:
 
     def render_and_save(self):
 
-        frame_step = self.scene.frame_step
-
         # Render the images and return their names
         imageList, imageList2 = self.render_images()
         if self.is_animation:
@@ -816,7 +812,6 @@ class Renderer:
         if self.is_animation:
             imageResult.filepath_raw = self.path+self.folder_name+image_name
             imageResult.save()
-            self.scene.frame_set(self.scene.frame_current+frame_step)
         else:
             imageResult.filepath_raw = self.path+image_name
             imageResult.save()
