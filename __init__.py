@@ -134,12 +134,7 @@ class RenderAnimation(Operator):
 
         context.scene.eeVR.cancel = False
 
-        # knowing it's animation, creates folder outside vrrender class, pass folder name to it
-        start_time = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
-        folder_name = f"{os.path.splitext(bpy.path.basename(bpy.data.filepath))[0]} {start_time}/"
-        path = bpy.path.abspath(context.preferences.filepaths.render_output_directory)
-        os.makedirs(path+folder_name, exist_ok=True)
-        self.renderer = Renderer(context, True, folder_name)
+        self.renderer = Renderer(context, True)
 
         self.frame_end = context.scene.frame_end
         frame_start = context.scene.frame_start

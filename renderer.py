@@ -254,7 +254,7 @@ void main() {
 
 class Renderer:
 
-    def __init__(self, context : bpy.types.Context, is_animation = False, folder = ''):
+    def __init__(self, context : bpy.types.Context, is_animation = False):
 
         # Check if the file is saved or not, can cause errors when not saved
         if not bpy.data.is_saved:
@@ -265,8 +265,6 @@ class Renderer:
 
         # Set internal variables for the class
         self.scene = context.scene
-        # Get the file extension
-        self.fext = os.path.splitext(self.scene.render.frame_path(frame=self.scene.frame_current))[-1]
         self.fformat = self.scene.render.image_settings.file_format
         self.color_mode = bpy.context.scene.render.image_settings.color_mode
         self.is_float = True if self.fformat in ['CINEON', 'DPX', 'OPEN_EXR_MULTILAYER', 'OPEN_EXR', 'HDR'] else False
@@ -297,7 +295,6 @@ class Renderer:
         # transfer clip_start & clip_end parameter to new camera
         self.camera.data.clip_start = self.camera_origin.data.clip_start
         self.camera.data.clip_end = self.camera_origin.data.clip_end
-        self.path = bpy.path.abspath(context.preferences.filepaths.render_output_directory)
         self.tmpdir = bpy.path.abspath(context.preferences.filepaths.temporary_directory if context.preferences.filepaths.temporary_directory else
                                        bpy.app.tempdir)
         if not self.tmpdir.endswith((os.sep, '/')):
@@ -389,11 +386,6 @@ class Renderer:
         shader_info.vertex_source(vertex_shader)
         shader_info.fragment_source(frag_shader)
         self.shader = gpu.shader.create_from_info(shader_info)
-
-        # Set the image name to the current time
-        self.start_time = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
-        # get folder name from outside
-        self.folder_name = folder
 
         # Get initial camera and output information
         # now origin camera data not need store, and no more need to use empty as proxy
@@ -782,10 +774,10 @@ class Renderer:
 
         # Render the images and return their names
         imageList, imageList2 = self.render_images()
-        if self.is_animation:
-            image_name = f"frame{self.scene.frame_current:06d}{self.fext}"
-        else:
-            image_name = f"{os.path.splitext(bpy.path.basename(bpy.data.filepath))[0]} {self.start_time}{self.fext}"
+
+        # Determine output filepath based on Blender's render settings
+        output_filepath = self.scene.render.frame_path(frame=self.scene.frame_current)
+        image_name = "eeVR_Final_Result"
 
         start_time = time.time()
         # Convert the rendered images to equirectangular projection image and save it to the disk
@@ -819,15 +811,17 @@ class Renderer:
             bpy.data.images.remove(rightImage)
 
         else:
-            imageResult = self.cubemap_to_panorama(imageList, "RenderResult")
+            imageResult = self.cubemap_to_panorama(imageList, image_name)
 
         save_start_time = time.time()
-        if self.is_animation:
-            imageResult.filepath_raw = self.path+self.folder_name+image_name
-            imageResult.save()
-        else:
-            imageResult.filepath_raw = self.path+image_name
-            imageResult.save()
+
+        # Ensure destination directory exists
+        abs_output_path = bpy.path.abspath(output_filepath)
+        os.makedirs(os.path.dirname(abs_output_path), exist_ok=True)
+
+        imageResult.filepath_raw = abs_output_path
+        imageResult.file_format = self.fformat
+        imageResult.save()
 
         print(f'''Saved '{imageResult.filepath_raw} float:{self.is_float} alpha:{self.has_alpha}'
  Time : {round(time.time() - start_time, 2)} seconds (Saving : {round(time.time() - save_start_time, 2)} seconds)
