@@ -24,7 +24,7 @@ bl_info = {
     "author": "EternalTrail",
     "version": (1, 1, 0),
     "blender": (5, 0, 0),
-    "location": "Properties > Render Tab (Available when EEVEE or Workbench)",
+    "location": "3D View > Sidebar > eeVR Tab",
     "wiki_url": "https://github.com/EternalTrail/eeVR",
     "tracker_url": "https://github.com/EternalTrail/eeVR/issues",
     "support": "COMMUNITY",
@@ -152,9 +152,8 @@ class RenderPanel(Panel):
 
     bl_idname = "EEVR_PT_render"
     bl_label = "eeVR"
-    bl_space_type = 'PROPERTIES'
-    bl_region_type = 'WINDOW'
-    bl_context = "render"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
     bl_category = "eeVR"
     bl_options = {'DEFAULT_CLOSED'}
 
@@ -407,15 +406,6 @@ class Properties(bpy.types.PropertyGroup):
         else:
             return self.trueTopBottom
 
-    @classmethod
-    def register(cls):
-        """ Register eeVR's properties to Blender """
-        bpy.types.Scene.eeVR = bpy.props.PointerProperty(type=cls)
-
-    @classmethod
-    def unregister(cls):
-        """ Unregister eeVR's properties from Blender """
-        del bpy.types.Scene.eeVR
 
 
 class Preferences(bpy.types.AddonPreferences):
@@ -443,12 +433,25 @@ class Preferences(bpy.types.AddonPreferences):
         self.layout.row().prop(self, 'temporal_file_format')
 
 
-# REGISTER
-register, unregister = bpy.utils.register_classes_factory((
+classes = (
     Properties,
     RenderPanel,
     RenderImage,
     RenderAnimation,
     Cancel,
     Preferences,
-))
+)
+
+
+def register():
+    """ Register eeVR's classes and properties to Blender """
+    for cls in classes:
+        bpy.utils.register_class(cls)
+    bpy.types.Scene.eeVR = bpy.props.PointerProperty(type=Properties)
+
+
+def unregister():
+    """ Unregister eeVR's classes and properties from Blender """
+    for cls in reversed(classes):
+        bpy.utils.unregister_class(cls)
+    del bpy.types.Scene.eeVR
