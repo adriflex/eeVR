@@ -25,11 +25,11 @@ commdef = '''
 #define EXTRUSION   %f
 #define INTRUSION   %f
 
-const float SIDEHTEXSCALE = 1 / (SIDEFRAC - INTRUSION);
-const float SIDEVTEXSCALE = 1 / (1 + 2 * SMARGIN);
-const float TBVTEXSCALE   = 1 / (TBFRAC - INTRUSION);
-const float HTEXSCALE     = 1 / (1 + 2 * (HMARGIN + EXTRUSION));
-const float VTEXSCALE     = 1 / (1 + 2 * (VMARGIN + EXTRUSION));
+const float SIDEHTEXSCALE = 1.0 / max(SIDEFRAC - INTRUSION, 0.0001);
+const float SIDEVTEXSCALE = 1.0 / (1.0 + 2.0 * SMARGIN);
+const float TBVTEXSCALE   = 1.0 / max(TBFRAC - INTRUSION, 0.0001);
+const float HTEXSCALE     = 1.0 / (1.0 + 2.0 * (HMARGIN + EXTRUSION));
+const float VTEXSCALE     = 1.0 / (1.0 + 2.0 * (VMARGIN + EXTRUSION));
 const float ACTUALHMARGIN = HMARGIN * HTEXSCALE;
 const float ACTUALVMARGIN = VMARGIN * VTEXSCALE;
 
@@ -385,7 +385,8 @@ class Renderer:
         shader_info.sampler(5, 'FLOAT_2D', "cubeFrontImage")
         shader_info.fragment_out(0, 'VEC4', "fragColor")
         shader_info.vertex_source(vertex_shader)
-        shader_info.fragment_source(frag_shader)
+        # Force alpha to 1.0 to avoid transparency artifacts
+        shader_info.fragment_source(frag_shader.replace('}', '    fragColor.a = 1.0;\n}'))
         self.shader = gpu.shader.create_from_info(shader_info)
 
         # Set the image name to the current time
@@ -477,6 +478,7 @@ class Renderer:
             if image is None:
                 raise ValueError(f"eeVR Error: Image at index {i} is None. Rendering might have failed.")
             image.colorspace_settings.name = 'Linear' if bpy.app.version < (4, 0, 0) else 'Linear Rec.709'
+            image.update()
             try:
                 tex = gpu.texture.from_image(image)
                 textures.append(tex)
@@ -493,11 +495,14 @@ class Renderer:
 
         print(f"eeVR: Stitching panorama ({width}x{height})")
         with offscreen.bind():
+            gpu.state.viewport_set(0, 0, width, height)
+            gpu.state.blend_set('NONE')
+            gpu.state.depth_test_set('NONE')
             try:
                 fb = offscreen.framebuffer
             except AttributeError:
                 fb = gpu.state.active_framebuffer_get()
-            fb.clear(color=(0.0, 0.0, 0.0, 0.0))
+            fb.clear(color=(0.0, 0.0, 0.0, 1.0))
             self.shader.bind()
 
             self.shader.uniform_sampler("cubeFrontImage", textures[0])
@@ -537,8 +542,9 @@ class Renderer:
 
             # Read the resulting pixels into a buffer
             buffer = fb.read_color(0, 0, width, height, 4, 0, 'FLOAT')
-            # Flatten the buffer for foreach_set (especially in Blender 4.0+)
-            buffer = np.asarray(buffer).ravel()
+            # In Blender 4.x/5.x, buffer might be multi-dimensional or have a weird structure.
+            # to_list() is safe and returns a flat list of floats.
+            buffer = buffer.to_list()
 
         # Unload the offscreen texture
         offscreen.free()
@@ -552,9 +558,12 @@ class Renderer:
         if not outputName in bpy.data.images.keys():
             bpy.data.images.new(outputName, width, height, float_buffer=self.is_float, alpha=self.has_alpha)
         imageRes = bpy.data.images[outputName]
+        imageRes.colorspace_settings.name = 'Linear' if bpy.app.version < (4, 0, 0) else 'Linear Rec.709'
         imageRes.file_format = self.fformat
-        imageRes.scale(width, height)
+        if imageRes.size[0] != width or imageRes.size[1] != height:
+            imageRes.scale(width, height)
         imageRes.pixels.foreach_set(buffer)
+        imageRes.update()
         return imageRes
 
 
