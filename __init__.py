@@ -43,27 +43,47 @@ def has_invalid_condition(self : 'Operator', context : 'Context'):
 
 
 class RenderImage(Operator):
-    """Render out the animation"""
+    """Render out a single frame"""
 
     bl_idname = 'eevr.render_image'
     bl_label = "Render a single frame"
 
+    def modal(self, context, event):
+        if event.type == 'TIMER':
+            wm = context.window_manager
+            wm.event_timer_remove(self.timer)
+
+            print("eeVR: Rendering single frame")
+            now = time.time()
+            try:
+                self.renderer.render_and_save()
+            except Exception as e:
+                self.report({'ERROR'}, f"eeVR Error: {str(e)}")
+                self.clean(context)
+                return {'CANCELLED'}
+            finally:
+                self.clean(context)
+            print(f"eeVR: {round(time.time() - now, 2)} seconds")
+            return {'FINISHED'}
+
+        return {'PASS_THROUGH'}
+
     def execute(self, context):
-        print("eeVR: execute")
+        print("eeVR: execute single")
 
         if has_invalid_condition(self, context):
             return {'FINISHED'}
 
-        renderer = Renderer(context, False)
-        now = time.time()
-        try:
-            renderer.render_and_save()
-        finally:
-            renderer.clean_up(context)
+        context.scene.eeVR.cancel = False
+        self.renderer = Renderer(context, False)
 
-        print(f"eeVR: {round(time.time() - now, 2)} seconds")
+        wm = context.window_manager
+        self.timer = wm.event_timer_add(0.1, window=context.window)
+        wm.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
 
-        return {'FINISHED'}
+    def clean(self, context):
+        self.renderer.clean_up(context)
 
 
 class RenderAnimation(Operator):
@@ -96,8 +116,8 @@ class RenderAnimation(Operator):
                 except Exception as e:
                     self.clean(context)
                     raise e
-                print(f"eeVR: {round(time.time() - now, 2)} seconds")
-                self.timer = wm.event_timer_add(0.1, window=context.window)
+                print(f"eeVR: frame {context.scene.frame_current} done in {round(time.time() - now, 2)} seconds")
+                self.timer = wm.event_timer_add(0.5, window=context.window)
             else:
                 self.clean(context)
                 return {'FINISHED'}

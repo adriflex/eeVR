@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 
 # Define parts of fragment shader
 commdef = '''
+#version 330 core
 #define PI          3.1415926535897932384626
 #define FOVFRAC     %f
 #define SIDEFRAC    %f
@@ -82,6 +83,9 @@ float atan2(float y, float x)
 {
     return x == 0.0 ? sign(y) * 0.5 * PI : atan(y, x);
 }
+
+in vec2 vTexCoord;
+out vec4 fragColor;
 
 void main() {
 '''
@@ -246,6 +250,11 @@ blend_seam_back_v = '''
 
 # Define the vertex shader
 vertex_shader = '''
+#version 330 core
+in vec3 aVertexPosition;
+in vec2 aVertexTextureCoord;
+out vec2 vTexCoord;
+
 void main() {
     vTexCoord = aVertexTextureCoord;
     gl_Position = vec4(aVertexPosition, 1);
@@ -300,6 +309,8 @@ class Renderer:
         self.path = bpy.path.abspath(context.preferences.filepaths.render_output_directory)
         self.tmpdir = bpy.path.abspath(context.preferences.filepaths.temporary_directory if context.preferences.filepaths.temporary_directory else
                                        bpy.app.tempdir)
+        if not self.tmpdir.endswith((os.sep, '/')):
+            self.tmpdir += os.sep
         self.tmpfile_format = 'OPEN_EXR' if self.is_float else self.preferences.temporal_file_format
         self.tmpfext = '.exr' if self.tmpfile_format == 'OPEN_EXR' else '.tga' if self.tmpfile_format == 'TARGA_RAW' else '.png'
         self.is_stereo = context.scene.render.use_multiview
@@ -471,10 +482,16 @@ class Renderer:
         # Change the color space of all of the images to Linear
         # and load them into OpenGL textures
         textures = []
-        for image in imageList:
+        for i, image in enumerate(imageList):
+            if image is None:
+                raise ValueError(f"eeVR Error: Image at index {i} is None. Rendering might have failed.")
             image.colorspace_settings.name = 'Linear' if bpy.app.version < (4, 0, 0) else 'Linear Rec.709'
-            tex = gpu.texture.from_image(image)
-            textures.append(tex)
+            try:
+                tex = gpu.texture.from_image(image)
+                textures.append(tex)
+            except Exception as e:
+                print(f"eeVR Error: Could not create texture from image {image.name}: {e}")
+                raise e
 
         # set the size of the final image
         width = self.image_size[0]
@@ -483,8 +500,12 @@ class Renderer:
         # Create an offscreen render buffer and texture
         offscreen = gpu.types.GPUOffScreen(width, height)
 
+        print(f"eeVR: Stitching panorama ({width}x{height})")
         with offscreen.bind():
-            fb = gpu.state.active_framebuffer_get()
+            try:
+                fb = offscreen.framebuffer
+            except AttributeError:
+                fb = gpu.state.active_framebuffer_get()
             fb.clear(color=(0.0, 0.0, 0.0, 0.0))
             self.shader.bind()
 
@@ -525,6 +546,8 @@ class Renderer:
 
             # Read the resulting pixels into a buffer
             buffer = fb.read_color(0, 0, width, height, 4, 0, 'FLOAT')
+            # Use numpy for efficient transfer
+            buffer = np.frombuffer(buffer, dtype=np.float32)
 
         # Unload the offscreen texture
         offscreen.free()
@@ -601,9 +624,11 @@ class Renderer:
         # Reset all the variables that were changed
         context.view_layer.objects.active = self.viewlayer_active_object_origin
         context.scene.camera = self.camera_origin
-        camera = self.camera.data
-        bpy.data.objects.remove(self.camera)
-        bpy.data.cameras.remove(camera)
+        if hasattr(self, 'camera') and self.camera in bpy.data.objects.values():
+            camera_data = self.camera.data
+            bpy.data.objects.remove(self.camera)
+            if camera_data in bpy.data.cameras.values():
+                bpy.data.cameras.remove(camera_data)
         self.scene.render.resolution_x = self.resolution_x_origin
         self.scene.render.resolution_y = self.resolution_y_origin
         self.scene.render.pixel_aspect_x = self.pixel_aspect_x_origin
@@ -622,7 +647,7 @@ class Renderer:
 
 
     def render_image(self, direction):
-
+        print(f"eeVR: Rendering {direction} view")
         # Render the image and load it into the script
         name = f'temp_img_store_{os.getpid()}_{direction}'
         org_filepath = self.scene.render.filepath
@@ -713,7 +738,7 @@ class Renderer:
 
 
     def render_images(self):
-
+        print(f"eeVR: Starting multi-pass render ({'Stereo' if self.is_stereo else 'Mono'})")
         # update focus distance if focus object is set
         if self.camera.data.dof.use_dof and self.camera_origin.data.dof.focus_object is not None:
             focus_location = self.camera_origin.data.dof.focus_object.matrix_world.translation
