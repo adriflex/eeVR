@@ -302,7 +302,9 @@ class Renderer:
                                        bpy.app.tempdir)
         if not self.tmpdir.endswith((os.sep, '/')):
             self.tmpdir += os.sep
-        self.tmpfile_format = 'OPEN_EXR' if self.is_float else self.preferences.temporal_file_format
+        self.tmpfile_format = self.preferences.temporal_file_format
+        if self.is_float:
+            self.tmpfile_format = 'OPEN_EXR'
         self.tmpfext = '.exr' if self.tmpfile_format == 'OPEN_EXR' else '.tga' if self.tmpfile_format == 'TARGA_RAW' else '.png'
         self.is_stereo = context.scene.render.use_multiview
         self.is_animation = is_animation
@@ -476,7 +478,8 @@ class Renderer:
         for i, image in enumerate(imageList):
             if image is None:
                 raise ValueError(f"eeVR Error: Image at index {i} is None. Rendering might have failed.")
-            image.colorspace_settings.name = 'Linear' if bpy.app.version < (4, 0, 0) else 'Linear Rec.709'
+            if self.tmpfile_format == 'OPEN_EXR':
+                image.colorspace_settings.name = 'Linear' if bpy.app.version < (4, 0, 0) else 'Linear Rec.709'
             image.update()
             try:
                 tex = gpu.texture.from_image(image)
@@ -675,6 +678,8 @@ class Renderer:
                 self.createdFiles.add(self.scene.render.filepath)
                 renderedImageL = bpy.data.images.load(self.scene.render.filepath)
                 renderedImageL.name = nameL
+                if self.tmpfile_format == 'OPEN_EXR':
+                    renderedImageL.colorspace_settings.name = 'Linear' if bpy.app.version < (4, 0, 0) else 'Linear Rec.709'
 
                 self.camera.location = [tmp_loc[0]-(0.5*self.IPD*cos(camera_angle)),\
                                         tmp_loc[1]-(0.5*self.IPD*sin(camera_angle)),\
@@ -686,6 +691,8 @@ class Renderer:
                 self.createdFiles.add(self.scene.render.filepath)
                 renderedImageR = bpy.data.images.load(self.scene.render.filepath)
                 renderedImageR.name = nameR
+                if self.tmpfile_format == 'OPEN_EXR':
+                    renderedImageR.colorspace_settings.name = 'Linear' if bpy.app.version < (4, 0, 0) else 'Linear Rec.709'
 
                 self.scene.render.use_multiview = True
                 self.camera.location = tmp_loc
@@ -702,7 +709,11 @@ class Renderer:
                 self.createdFiles.add(self.scene.render.filepath)
                 renderedImage =  bpy.data.images.load(self.scene.render.filepath)
                 renderedImage.name = name
-                renderedImage.colorspace_settings.name = 'Linear' if bpy.app.version < (4, 0, 0) else 'Linear Rec.709'
+                # Only force Linear if it's actually a linear format.
+                # If it's a PNG, we want Blender to linearize it (default behavior for sRGB PNGs).
+                if self.tmpfile_format == 'OPEN_EXR':
+                    renderedImage.colorspace_settings.name = 'Linear' if bpy.app.version < (4, 0, 0) else 'Linear Rec.709'
+
                 imageLen = len(renderedImage.pixels)
                 renderedImageL = bpy.data.images.new(nameL, self.scene.render.resolution_x, self.scene.render.resolution_y, float_buffer=self.is_float, alpha=self.has_alpha)
                 renderedImageR = bpy.data.images.new(nameR, self.scene.render.resolution_x, self.scene.render.resolution_y, float_buffer=self.is_float, alpha=self.has_alpha)
@@ -728,6 +739,8 @@ class Renderer:
             self.createdFiles.add(self.scene.render.filepath)
             renderedImageL = bpy.data.images.load(self.scene.render.filepath)
             renderedImageL.name = name
+            if self.tmpfile_format == 'OPEN_EXR':
+                renderedImageL.colorspace_settings.name = 'Linear' if bpy.app.version < (4, 0, 0) else 'Linear Rec.709'
             renderedImageR = None
 
         self.scene.render.filepath = org_filepath

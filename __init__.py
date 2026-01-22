@@ -443,10 +443,11 @@ class Preferences(bpy.types.AddonPreferences):
 
     temporal_file_format: bpy.props.EnumProperty(
         items=[
+            ("OPEN_EXR", "OpenEXR (Recommended)", "Output image in OpenEXR format (Linear)."),
             ("PNG", "PNG", "Output image in PNG format."),
             ("TARGA_RAW", "Targa Raw", "Output image in uncompressed Targa format."),
         ],
-        default="TARGA_RAW",
+        default="OPEN_EXR",
         name="Temporal File Format",
     )
 
