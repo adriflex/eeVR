@@ -542,7 +542,7 @@ class Renderer:
             # Read the resulting pixels into a buffer
             # Pre-allocate a flat buffer to ensure compatibility with foreach_set in Blender 4.0+
             buffer = gpu.types.Buffer('FLOAT', (width * height * 4,))
-            fb.read_color(0, 0, width, height, 4, 0, 'FLOAT', buffer)
+            fb.read_color(0, 0, width, height, 4, 0, 'FLOAT', data=buffer)
 
         # Unload the offscreen texture
         offscreen.free()
