@@ -537,6 +537,8 @@ class Renderer:
 
             # Read the resulting pixels into a buffer
             buffer = fb.read_color(0, 0, width, height, 4, 0, 'FLOAT')
+            # Flatten the buffer for foreach_set (especially in Blender 4.0+)
+            buffer = np.asarray(buffer).ravel()
 
         # Unload the offscreen texture
         offscreen.free()
