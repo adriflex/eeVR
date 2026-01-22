@@ -377,12 +377,12 @@ class Renderer:
         shader_info.vertex_in(0, 'VEC3', "aVertexPosition")
         shader_info.vertex_in(1, 'VEC2', "aVertexTextureCoord")
         shader_info.vertex_out(vert_out)
-        shader_info.sampler("cubeLeftImage", 'FLOAT_2D')
-        shader_info.sampler("cubeRightImage", 'FLOAT_2D')
-        shader_info.sampler("cubeBottomImage", 'FLOAT_2D')
-        shader_info.sampler("cubeTopImage", 'FLOAT_2D')
-        shader_info.sampler("cubeBackImage", 'FLOAT_2D')
-        shader_info.sampler("cubeFrontImage", 'FLOAT_2D')
+        shader_info.sampler(0, 'FLOAT_2D', "cubeLeftImage")
+        shader_info.sampler(1, 'FLOAT_2D', "cubeRightImage")
+        shader_info.sampler(2, 'FLOAT_2D', "cubeBottomImage")
+        shader_info.sampler(3, 'FLOAT_2D', "cubeTopImage")
+        shader_info.sampler(4, 'FLOAT_2D', "cubeBackImage")
+        shader_info.sampler(5, 'FLOAT_2D', "cubeFrontImage")
         shader_info.fragment_out(0, 'VEC4', "fragColor")
         shader_info.vertex_source(vertex_shader)
         shader_info.fragment_source(frag_shader)
@@ -537,8 +537,6 @@ class Renderer:
 
             # Read the resulting pixels into a buffer
             buffer = fb.read_color(0, 0, width, height, 4, 0, 'FLOAT')
-            # Use numpy for efficient transfer
-            buffer = np.frombuffer(buffer, dtype=np.float32)
 
         # Unload the offscreen texture
         offscreen.free()

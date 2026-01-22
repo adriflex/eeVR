@@ -57,14 +57,13 @@ class RenderImage(Operator):
             now = time.time()
             try:
                 self.renderer.render_and_save()
+                print(f"eeVR: {round(time.time() - now, 2)} seconds")
+                return {'FINISHED'}
             except Exception as e:
                 self.report({'ERROR'}, f"eeVR Error: {str(e)}")
-                self.clean(context)
                 return {'CANCELLED'}
             finally:
                 self.clean(context)
-            print(f"eeVR: {round(time.time() - now, 2)} seconds")
-            return {'FINISHED'}
 
         return {'PASS_THROUGH'}
 
