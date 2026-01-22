@@ -266,8 +266,8 @@ class Renderer:
         # Set internal variables for the class
         self.scene = context.scene
         # Get the file extension
-        self.fext = os.path.splitext(bpy.context.scene.render.frame_path(preview=True))[-1]
-        self.fformat = bpy.context.scene.render.image_settings.file_format.format()
+        self.fext = os.path.splitext(self.scene.render.frame_path(frame=self.scene.frame_current))[-1]
+        self.fformat = self.scene.render.image_settings.file_format
         self.color_mode = bpy.context.scene.render.image_settings.color_mode
         self.is_float = True if self.fformat in ['CINEON', 'DPX', 'OPEN_EXR_MULTILAYER', 'OPEN_EXR', 'HDR'] else False
         self.has_alpha = True if self.color_mode == 'RGBA' else False
@@ -397,7 +397,7 @@ class Renderer:
         self.IPD = self.camera.data.stereo.interocular_distance
 
         # Set camera variables for proper result
-        self.camera.data.type = 'PANO'
+        self.camera.data.type = 'PERSP'
         self.camera.data.stereo.convergence_mode = 'PARALLEL'
         self.camera.data.stereo.pivot = 'CENTER'
         # transfer depth of field settings
@@ -525,7 +525,6 @@ class Renderer:
 
             # Read the resulting pixels into a buffer
             buffer = fb.read_color(0, 0, width, height, 4, 0, 'FLOAT')
-            buffer.dimensions = width * height * 4
 
         # Unload the offscreen texture
         offscreen.free()
