@@ -22,9 +22,9 @@ bl_info = {
     "name": "eeVR",
     "description": "Render in different projections using Eevee engine",
     "author": "EternalTrail",
-    "version": (1, 0, 1),
-    "blender": (3, 6, 0),
-    "location": "Properties > Render Tab (Available when EEVEE or Workbench)",
+    "version": (1, 1, 0),
+    "blender": (5, 0, 0),
+    "location": "3D View > Sidebar > eeVR Tab",
     "wiki_url": "https://github.com/EternalTrail/eeVR",
     "tracker_url": "https://github.com/EternalTrail/eeVR/issues",
     "support": "COMMUNITY",
@@ -43,27 +43,46 @@ def has_invalid_condition(self : 'Operator', context : 'Context'):
 
 
 class RenderImage(Operator):
-    """Render out the animation"""
+    """Render out a single frame"""
 
     bl_idname = 'eevr.render_image'
     bl_label = "Render a single frame"
 
+    def modal(self, context, event):
+        if event.type == 'TIMER':
+            wm = context.window_manager
+            wm.event_timer_remove(self.timer)
+
+            print("eeVR: Rendering single frame")
+            now = time.time()
+            try:
+                self.renderer.render_and_save()
+                print(f"eeVR: {round(time.time() - now, 2)} seconds")
+                return {'FINISHED'}
+            except Exception as e:
+                self.report({'ERROR'}, f"eeVR Error: {str(e)}")
+                return {'CANCELLED'}
+            finally:
+                self.clean(context)
+
+        return {'PASS_THROUGH'}
+
     def execute(self, context):
-        print("eeVR: execute")
+        print("eeVR: execute single")
 
         if has_invalid_condition(self, context):
             return {'FINISHED'}
 
-        renderer = Renderer(context, False)
-        now = time.time()
-        try:
-            renderer.render_and_save()
-        finally:
-            renderer.clean_up(context)
+        context.scene.eeVR.cancel = False
+        self.renderer = Renderer(context, False)
 
-        print(f"eeVR: {round(time.time() - now, 2)} seconds")
+        wm = context.window_manager
+        self.timer = wm.event_timer_add(0.1, window=context.window)
+        wm.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
 
-        return {'FINISHED'}
+    def clean(self, context):
+        self.renderer.clean_up(context)
 
 
 class RenderAnimation(Operator):
@@ -96,8 +115,11 @@ class RenderAnimation(Operator):
                 except Exception as e:
                     self.clean(context)
                     raise e
-                print(f"eeVR: {round(time.time() - now, 2)} seconds")
-                self.timer = wm.event_timer_add(0.1, window=context.window)
+                print(f"eeVR: frame {context.scene.frame_current} done in {round(time.time() - now, 2)} seconds")
+
+                # Advance to next frame
+                context.scene.frame_set(context.scene.frame_current + context.scene.frame_step)
+                self.timer = wm.event_timer_add(0.5, window=context.window)
             else:
                 self.clean(context)
                 return {'FINISHED'}
@@ -112,12 +134,7 @@ class RenderAnimation(Operator):
 
         context.scene.eeVR.cancel = False
 
-        # knowing it's animation, creates folder outside vrrender class, pass folder name to it
-        start_time = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
-        folder_name = f"{os.path.splitext(bpy.path.basename(bpy.data.filepath))[0]} {start_time}/"
-        path = bpy.path.abspath(context.preferences.filepaths.render_output_directory)
-        os.makedirs(path+folder_name, exist_ok=True)
-        self.renderer = Renderer(context, True, folder_name)
+        self.renderer = Renderer(context, True)
 
         self.frame_end = context.scene.frame_end
         frame_start = context.scene.frame_start
@@ -152,9 +169,8 @@ class RenderPanel(Panel):
 
     bl_idname = "EEVR_PT_render"
     bl_label = "eeVR"
-    bl_space_type = 'PROPERTIES'
-    bl_region_type = 'WINDOW'
-    bl_context = "render"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
     bl_category = "eeVR"
     bl_options = {'DEFAULT_CLOSED'}
 
@@ -407,15 +423,6 @@ class Properties(bpy.types.PropertyGroup):
         else:
             return self.trueTopBottom
 
-    @classmethod
-    def register(cls):
-        """ Register eeVR's properties to Blender """
-        bpy.types.Scene.eeVR = bpy.props.PointerProperty(type=cls)
-
-    @classmethod
-    def unregister(cls):
-        """ Unregister eeVR's properties from Blender """
-        del bpy.types.Scene.eeVR
 
 
 class Preferences(bpy.types.AddonPreferences):
@@ -431,10 +438,11 @@ class Preferences(bpy.types.AddonPreferences):
 
     temporal_file_format: bpy.props.EnumProperty(
         items=[
+            ("OPEN_EXR", "OpenEXR (Recommended)", "Output image in OpenEXR format (Linear)."),
             ("PNG", "PNG", "Output image in PNG format."),
             ("TARGA_RAW", "Targa Raw", "Output image in uncompressed Targa format."),
         ],
-        default="TARGA_RAW",
+        default="OPEN_EXR",
         name="Temporal File Format",
     )
 
@@ -443,12 +451,25 @@ class Preferences(bpy.types.AddonPreferences):
         self.layout.row().prop(self, 'temporal_file_format')
 
 
-# REGISTER
-register, unregister = bpy.utils.register_classes_factory((
+classes = (
     Properties,
     RenderPanel,
     RenderImage,
     RenderAnimation,
     Cancel,
     Preferences,
-))
+)
+
+
+def register():
+    """ Register eeVR's classes and properties to Blender """
+    for cls in classes:
+        bpy.utils.register_class(cls)
+    bpy.types.Scene.eeVR = bpy.props.PointerProperty(type=Properties)
+
+
+def unregister():
+    """ Unregister eeVR's classes and properties from Blender """
+    for cls in reversed(classes):
+        bpy.utils.unregister_class(cls)
+    del bpy.types.Scene.eeVR

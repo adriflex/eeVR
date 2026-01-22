@@ -25,11 +25,11 @@ commdef = '''
 #define EXTRUSION   %f
 #define INTRUSION   %f
 
-const float SIDEHTEXSCALE = 1 / (SIDEFRAC - INTRUSION);
-const float SIDEVTEXSCALE = 1 / (1 + 2 * SMARGIN);
-const float TBVTEXSCALE   = 1 / (TBFRAC - INTRUSION);
-const float HTEXSCALE     = 1 / (1 + 2 * (HMARGIN + EXTRUSION));
-const float VTEXSCALE     = 1 / (1 + 2 * (VMARGIN + EXTRUSION));
+const float SIDEHTEXSCALE = 1.0 / max(SIDEFRAC - INTRUSION, 0.0001);
+const float SIDEVTEXSCALE = 1.0 / (1.0 + 2.0 * SMARGIN);
+const float TBVTEXSCALE   = 1.0 / max(TBFRAC - INTRUSION, 0.0001);
+const float HTEXSCALE     = 1.0 / (1.0 + 2.0 * (HMARGIN + EXTRUSION));
+const float VTEXSCALE     = 1.0 / (1.0 + 2.0 * (VMARGIN + EXTRUSION));
 const float ACTUALHMARGIN = HMARGIN * HTEXSCALE;
 const float ACTUALVMARGIN = VMARGIN * VTEXSCALE;
 
@@ -254,7 +254,7 @@ void main() {
 
 class Renderer:
 
-    def __init__(self, context : bpy.types.Context, is_animation = False, folder = ''):
+    def __init__(self, context : bpy.types.Context, is_animation = False):
 
         # Check if the file is saved or not, can cause errors when not saved
         if not bpy.data.is_saved:
@@ -265,9 +265,7 @@ class Renderer:
 
         # Set internal variables for the class
         self.scene = context.scene
-        # Get the file extension
-        self.fext = os.path.splitext(bpy.context.scene.render.frame_path(preview=True))[-1]
-        self.fformat = bpy.context.scene.render.image_settings.file_format.format()
+        self.fformat = self.scene.render.image_settings.file_format
         self.color_mode = bpy.context.scene.render.image_settings.color_mode
         self.is_float = True if self.fformat in ['CINEON', 'DPX', 'OPEN_EXR_MULTILAYER', 'OPEN_EXR', 'HDR'] else False
         self.has_alpha = True if self.color_mode == 'RGBA' else False
@@ -297,10 +295,13 @@ class Renderer:
         # transfer clip_start & clip_end parameter to new camera
         self.camera.data.clip_start = self.camera_origin.data.clip_start
         self.camera.data.clip_end = self.camera_origin.data.clip_end
-        self.path = bpy.path.abspath(context.preferences.filepaths.render_output_directory)
         self.tmpdir = bpy.path.abspath(context.preferences.filepaths.temporary_directory if context.preferences.filepaths.temporary_directory else
                                        bpy.app.tempdir)
-        self.tmpfile_format = 'OPEN_EXR' if self.is_float else self.preferences.temporal_file_format
+        if not self.tmpdir.endswith((os.sep, '/')):
+            self.tmpdir += os.sep
+        self.tmpfile_format = self.preferences.temporal_file_format
+        if self.is_float:
+            self.tmpfile_format = 'OPEN_EXR'
         self.tmpfext = '.exr' if self.tmpfile_format == 'OPEN_EXR' else '.tga' if self.tmpfile_format == 'TARGA_RAW' else '.png'
         self.is_stereo = context.scene.render.use_multiview
         self.is_animation = is_animation
@@ -367,7 +368,7 @@ class Renderer:
          + ('' if self.no_side_images else fetch_sides + (blend_seam_sides if vmargin > 0.0 else ''))\
          + ('' if self.no_back_image else (fetch_back % ((blend_seam_back_h if hmargin > 0.0 else '') + (blend_seam_back_v if vmargin > 0.0 else ''))))\
          + (fetch_front % ((blend_seam_front_h if hmargin > 0.0 or ext_front_view else '') + (blend_seam_front_v if vmargin > 0.0 or ext_front_view else '')))\
-         + '}'
+         + '    fragColor.a = 1.0;\n}'
 
         shader_info = gpu.types.GPUShaderCreateInfo()
         vert_out = gpu.types.GPUStageInterfaceInfo("eevr")
@@ -386,18 +387,13 @@ class Renderer:
         shader_info.fragment_source(frag_shader)
         self.shader = gpu.shader.create_from_info(shader_info)
 
-        # Set the image name to the current time
-        self.start_time = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
-        # get folder name from outside
-        self.folder_name = folder
-
         # Get initial camera and output information
         # now origin camera data not need store, and no more need to use empty as proxy
         self.camera_rotation = list(self.camera.rotation_euler)
         self.IPD = self.camera.data.stereo.interocular_distance
 
         # Set camera variables for proper result
-        self.camera.data.type = 'PANO'
+        self.camera.data.type = 'PERSP'
         self.camera.data.stereo.convergence_mode = 'PARALLEL'
         self.camera.data.stereo.pivot = 'CENTER'
         # transfer depth of field settings
@@ -471,10 +467,18 @@ class Renderer:
         # Change the color space of all of the images to Linear
         # and load them into OpenGL textures
         textures = []
-        for image in imageList:
-            image.colorspace_settings.name = 'Linear' if bpy.app.version < (4, 0, 0) else 'Linear Rec.709'
-            tex = gpu.texture.from_image(image)
-            textures.append(tex)
+        for i, image in enumerate(imageList):
+            if image is None:
+                raise ValueError(f"eeVR Error: Image at index {i} is None. Rendering might have failed.")
+            if self.tmpfile_format == 'OPEN_EXR':
+                image.colorspace_settings.name = 'Linear' if bpy.app.version < (4, 0, 0) else 'Linear Rec.709'
+            image.update()
+            try:
+                tex = gpu.texture.from_image(image)
+                textures.append(tex)
+            except Exception as e:
+                print(f"eeVR Error: Could not create texture from image {image.name}: {e}")
+                raise e
 
         # set the size of the final image
         width = self.image_size[0]
@@ -483,9 +487,16 @@ class Renderer:
         # Create an offscreen render buffer and texture
         offscreen = gpu.types.GPUOffScreen(width, height)
 
+        print(f"eeVR: Stitching panorama ({width}x{height})")
         with offscreen.bind():
-            fb = gpu.state.active_framebuffer_get()
-            fb.clear(color=(0.0, 0.0, 0.0, 0.0))
+            gpu.state.viewport_set(0, 0, width, height)
+            gpu.state.blend_set('NONE')
+            gpu.state.depth_test_set('NONE')
+            try:
+                fb = offscreen.framebuffer
+            except AttributeError:
+                fb = gpu.state.active_framebuffer_get()
+            fb.clear(color=(0.0, 0.0, 0.0, 1.0))
             self.shader.bind()
 
             self.shader.uniform_sampler("cubeFrontImage", textures[0])
@@ -524,8 +535,9 @@ class Renderer:
             batch.draw(self.shader)
 
             # Read the resulting pixels into a buffer
-            buffer = fb.read_color(0, 0, width, height, 4, 0, 'FLOAT')
-            buffer.dimensions = width * height * 4
+            # Pre-allocate a flat buffer to ensure compatibility with foreach_set in Blender 4.0+
+            buffer = gpu.types.Buffer('FLOAT', (width * height * 4,))
+            fb.read_color(0, 0, width, height, 4, 0, 'FLOAT', data=buffer)
 
         # Unload the offscreen texture
         offscreen.free()
@@ -539,9 +551,12 @@ class Renderer:
         if not outputName in bpy.data.images.keys():
             bpy.data.images.new(outputName, width, height, float_buffer=self.is_float, alpha=self.has_alpha)
         imageRes = bpy.data.images[outputName]
+        imageRes.colorspace_settings.name = 'Linear' if bpy.app.version < (4, 0, 0) else 'Linear Rec.709'
         imageRes.file_format = self.fformat
-        imageRes.scale(width, height)
+        if imageRes.size[0] != width or imageRes.size[1] != height:
+            imageRes.scale(width, height)
         imageRes.pixels.foreach_set(buffer)
+        imageRes.update()
         return imageRes
 
 
@@ -602,9 +617,11 @@ class Renderer:
         # Reset all the variables that were changed
         context.view_layer.objects.active = self.viewlayer_active_object_origin
         context.scene.camera = self.camera_origin
-        camera = self.camera.data
-        bpy.data.objects.remove(self.camera)
-        bpy.data.cameras.remove(camera)
+        if hasattr(self, 'camera') and self.camera in bpy.data.objects.values():
+            camera_data = self.camera.data
+            bpy.data.objects.remove(self.camera)
+            if camera_data in bpy.data.cameras.values():
+                bpy.data.cameras.remove(camera_data)
         self.scene.render.resolution_x = self.resolution_x_origin
         self.scene.render.resolution_y = self.resolution_y_origin
         self.scene.render.pixel_aspect_x = self.pixel_aspect_x_origin
@@ -623,7 +640,7 @@ class Renderer:
 
 
     def render_image(self, direction):
-
+        print(f"eeVR: Rendering {direction} view")
         # Render the image and load it into the script
         name = f'temp_img_store_{os.getpid()}_{direction}'
         org_filepath = self.scene.render.filepath
@@ -653,6 +670,8 @@ class Renderer:
                 self.createdFiles.add(self.scene.render.filepath)
                 renderedImageL = bpy.data.images.load(self.scene.render.filepath)
                 renderedImageL.name = nameL
+                if self.tmpfile_format == 'OPEN_EXR':
+                    renderedImageL.colorspace_settings.name = 'Linear' if bpy.app.version < (4, 0, 0) else 'Linear Rec.709'
 
                 self.camera.location = [tmp_loc[0]-(0.5*self.IPD*cos(camera_angle)),\
                                         tmp_loc[1]-(0.5*self.IPD*sin(camera_angle)),\
@@ -664,6 +683,8 @@ class Renderer:
                 self.createdFiles.add(self.scene.render.filepath)
                 renderedImageR = bpy.data.images.load(self.scene.render.filepath)
                 renderedImageR.name = nameR
+                if self.tmpfile_format == 'OPEN_EXR':
+                    renderedImageR.colorspace_settings.name = 'Linear' if bpy.app.version < (4, 0, 0) else 'Linear Rec.709'
 
                 self.scene.render.use_multiview = True
                 self.camera.location = tmp_loc
@@ -680,7 +701,11 @@ class Renderer:
                 self.createdFiles.add(self.scene.render.filepath)
                 renderedImage =  bpy.data.images.load(self.scene.render.filepath)
                 renderedImage.name = name
-                renderedImage.colorspace_settings.name = 'Linear' if bpy.app.version < (4, 0, 0) else 'Linear Rec.709'
+                # Only force Linear if it's actually a linear format.
+                # If it's a PNG, we want Blender to linearize it (default behavior for sRGB PNGs).
+                if self.tmpfile_format == 'OPEN_EXR':
+                    renderedImage.colorspace_settings.name = 'Linear' if bpy.app.version < (4, 0, 0) else 'Linear Rec.709'
+
                 imageLen = len(renderedImage.pixels)
                 renderedImageL = bpy.data.images.new(nameL, self.scene.render.resolution_x, self.scene.render.resolution_y, float_buffer=self.is_float, alpha=self.has_alpha)
                 renderedImageR = bpy.data.images.new(nameR, self.scene.render.resolution_x, self.scene.render.resolution_y, float_buffer=self.is_float, alpha=self.has_alpha)
@@ -706,6 +731,8 @@ class Renderer:
             self.createdFiles.add(self.scene.render.filepath)
             renderedImageL = bpy.data.images.load(self.scene.render.filepath)
             renderedImageL.name = name
+            if self.tmpfile_format == 'OPEN_EXR':
+                renderedImageL.colorspace_settings.name = 'Linear' if bpy.app.version < (4, 0, 0) else 'Linear Rec.709'
             renderedImageR = None
 
         self.scene.render.filepath = org_filepath
@@ -714,7 +741,7 @@ class Renderer:
 
 
     def render_images(self):
-
+        print(f"eeVR: Starting multi-pass render ({'Stereo' if self.is_stereo else 'Mono'})")
         # update focus distance if focus object is set
         if self.camera.data.dof.use_dof and self.camera_origin.data.dof.focus_object is not None:
             focus_location = self.camera_origin.data.dof.focus_object.matrix_world.translation
@@ -745,14 +772,12 @@ class Renderer:
 
     def render_and_save(self):
 
-        frame_step = self.scene.frame_step
-
         # Render the images and return their names
         imageList, imageList2 = self.render_images()
-        if self.is_animation:
-            image_name = f"frame{self.scene.frame_current:06d}{self.fext}"
-        else:
-            image_name = f"{os.path.splitext(bpy.path.basename(bpy.data.filepath))[0]} {self.start_time}{self.fext}"
+
+        # Determine output filepath based on Blender's render settings
+        output_filepath = self.scene.render.frame_path(frame=self.scene.frame_current)
+        image_name = "eeVR_Final_Result"
 
         start_time = time.time()
         # Convert the rendered images to equirectangular projection image and save it to the disk
@@ -786,16 +811,17 @@ class Renderer:
             bpy.data.images.remove(rightImage)
 
         else:
-            imageResult = self.cubemap_to_panorama(imageList, "RenderResult")
+            imageResult = self.cubemap_to_panorama(imageList, image_name)
 
         save_start_time = time.time()
-        if self.is_animation:
-            imageResult.filepath_raw = self.path+self.folder_name+image_name
-            imageResult.save()
-            self.scene.frame_set(self.scene.frame_current+frame_step)
-        else:
-            imageResult.filepath_raw = self.path+image_name
-            imageResult.save()
+
+        # Ensure destination directory exists
+        abs_output_path = bpy.path.abspath(output_filepath)
+        os.makedirs(os.path.dirname(abs_output_path), exist_ok=True)
+
+        imageResult.filepath_raw = abs_output_path
+        imageResult.file_format = self.fformat
+        imageResult.save()
 
         print(f'''Saved '{imageResult.filepath_raw} float:{self.is_float} alpha:{self.has_alpha}'
  Time : {round(time.time() - start_time, 2)} seconds (Saving : {round(time.time() - save_start_time, 2)} seconds)
