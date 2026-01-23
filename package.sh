@@ -1,1 +1,1 @@
-git archive --format=zip --prefix=eeVR/ --output=eeVR.zip HEAD
+git archive --format=zip --output=eeVR.zip HEAD

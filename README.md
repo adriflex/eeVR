@@ -4,10 +4,28 @@ Blender addon to render 360° and 180° images and videos in eevee engine with s
 
 ## Getting Started
 
-You will need to get [**Blender 3.6 or higher**](https://www.blender.org), install it, download the zip file from this GitHub,
-load the addon into Blender by installing the zip file in Blender Preferences > Add-ons > Install,
-search for "eeVR" under the Community tab and click the checkbox to enable it.
-A eeVR panel will appear in the Properties' **Render tab**, FOV value adjustment, and buttons for rendering stills and animations.
+### Blender 4.2 or higher (Extensions)
+
+Download the ZIP file from this GitHub. To install it as an extension:
+1. Open **Blender Preferences** > **Extensions**.
+2. Click the arrow in the top right and select **Install from Disk**.
+3. Select the downloaded ZIP file.
+4. The `eeVR` panel will appear in the 3D View Sidebar (**N Panel**) under the **eeVR** tab (or in the Properties' **Render tab** depending on your version).
+
+**Note:** If you download the ZIP directly from GitHub's "Download ZIP" button, it may contain a subfolder that prevents it from being recognized as an extension. If you encounter issues, zip the *contents* of the repository directly so that `bl_extension.toml` is at the root of the ZIP.
+
+### Blender 3.6 to 4.1 (Legacy Add-ons)
+
+1. Download the ZIP file from this GitHub.
+2. Open **Blender Preferences** > **Add-ons** > **Install**.
+3. Select the ZIP file.
+4. Search for "eeVR" and click the checkbox to enable it.
+
+**IMPORTANT:** For legacy installation, the folder name inside your addons directory **must not contain hyphens**. If you see a "No module named 'eeVR-master'" or similar error, rename the folder to `eevr` (all lowercase, no hyphens).
+
+### Usage
+
+A eeVR panel will appear in the 3D View Sidebar (**N Panel**) or Properties' **Render tab**, with FOV value adjustment and buttons for rendering stills and animations.
 **The rendered images/image sequences will be stored in the same directory as the .blend file**.
 
 **NOTE** : The eeVR panel appears only when the render engine is EEVEE or WORKBENCH.

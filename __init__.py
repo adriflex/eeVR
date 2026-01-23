@@ -101,6 +101,7 @@ class RenderAnimation(Operator):
                 except Exception as e:
                     self.clean(context)
                     raise e
+                context.scene.frame_set(context.scene.frame_current + context.scene.frame_step)
                 print(f"eeVR: {round(time.time() - now, 2)} seconds")
                 self.timer = wm.event_timer_add(0.1, window=context.window)
             else:
