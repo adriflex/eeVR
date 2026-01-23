@@ -261,7 +261,8 @@ class Renderer:
             raise PermissionError("Save file before rendering")
 
         props: Properties = context.scene.eeVR
-        self.preferences: Preferences = context.preferences.addons[__package__].preferences
+        addon_id = __package__ if __package__ else __name__.partition('.')[0]
+        self.preferences: Preferences = context.preferences.addons[addon_id].preferences
 
         # Set internal variables for the class
         self.scene = context.scene

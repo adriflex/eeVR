@@ -193,7 +193,8 @@ class RenderPanel(Panel):
     def draw(self, context):
 
         props : Properties = context.scene.eeVR
-        addon_prefs = context.preferences.addons[__package__].preferences
+        addon_id = __package__ if __package__ else __name__.partition('.')[0]
+        addon_prefs = context.preferences.addons[addon_id].preferences
         # Draw the buttons for each of the rendering operators
         layout = self.layout
         col = layout.column()
@@ -474,7 +475,7 @@ class Properties(bpy.types.PropertyGroup):
 class Preferences(bpy.types.AddonPreferences):
     # this must match the addon name, use '__package__'
     # when defining this in a submodule of a python package.
-    bl_idname = __name__
+    bl_idname = __package__
 
     remain_temporalies: bpy.props.BoolProperty(
         name='Remain temporal work files',
