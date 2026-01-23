@@ -402,7 +402,8 @@ class Renderer:
         self.IPD = self.camera.data.stereo.interocular_distance
 
         # Set camera variables for proper result
-        self.camera.data.type = 'PANO'
+        # Use PERSP for intermediate faces to avoid Eevee Next's panoramic overhead
+        self.camera.data.type = 'PERSP'
         self.camera.data.stereo.convergence_mode = 'PARALLEL'
         self.camera.data.stereo.pivot = 'CENTER'
         # transfer depth of field settings
@@ -529,8 +530,15 @@ class Renderer:
             # Render the image
             batch.draw(self.shader)
 
-            # Read the resulting pixels into a buffer
-            buffer = fb.read_color(0, 0, width, height, 4, 0, 'FLOAT')
+            # Read the resulting pixels into a buffer using strips to avoid memory spikes
+            # 12000px at 32-bit float is huge, buffer.to_list() would create a massive Python list
+            final_pixels = np.empty(width * height * 4, dtype=np.float32)
+            strip_height = 256
+            for y in range(0, height, strip_height):
+                h = min(strip_height, height - y)
+                strip_buffer = fb.read_color(0, y, width, h, 4, 0, 'FLOAT')
+                # buffer.to_list() creates a Python list, we immediately put it into our numpy array
+                final_pixels[y * width * 4 : (y + h) * width * 4] = strip_buffer.to_list()
 
         # Unload the offscreen texture
         offscreen.free()
@@ -547,10 +555,9 @@ class Renderer:
         imageRes.file_format = self.fformat
         imageRes.scale(width, height)
 
-        # In Blender 4.0+, buffer.to_list() followed by flattening is more reliable
-        # to avoid shape mismatches or issues with foreach_set on direct gpu buffers
-        # Explicitly use float32 to avoid "incorrect sequence item type: d" (double) error
-        imageRes.pixels.foreach_set(np.array(buffer.to_list(), dtype=np.float32).ravel())
+        # Efficiently set the pixels from our pre-allocated numpy array
+        imageRes.pixels.foreach_set(final_pixels)
+        imageRes.update()
 
         return imageRes
 
@@ -632,8 +639,21 @@ class Renderer:
         self.createdFiles.clear()
 
 
-    def render_image(self, direction):
+    def get_image_from_render(self, name, width, height):
+        """ Capture the 'Render Result' into a new image object in memory """
+        if name in bpy.data.images:
+            bpy.data.images.remove(bpy.data.images[name])
 
+        image = bpy.data.images.new(name, width, height, float_buffer=self.is_float, alpha=self.has_alpha)
+        render_result = bpy.data.images['Render Result']
+
+        # Copy pixels directly from the render result buffer
+        # This is much faster than saving to disk and loading back
+        image.pixels.foreach_set(render_result.pixels)
+        image.update()
+        return image
+
+    def render_image(self, direction):
         # Render the image and load it into the script
         name = f'temp_img_store_{os.getpid()}_{direction}'
         org_filepath = self.scene.render.filepath
@@ -641,125 +661,69 @@ class Renderer:
         org_color_depth = self.scene.render.image_settings.color_depth
         org_exr_codec = self.scene.render.image_settings.exr_codec
 
+        # Use High quality for intermediate if needed, but in-memory avoids some of this
         self.scene.render.image_settings.file_format = self.tmpfile_format
         self.scene.render.image_settings.color_depth = '32' if self.is_float else '16'
-        self.scene.render.image_settings.exr_codec = 'DWAA' # Good balance of quality/compression
+        self.scene.render.image_settings.exr_codec = 'DWAA'
 
         frame_num = self.scene.frame_current
         face_name_base = f"frame_{frame_num:06d}_{direction}"
 
+        width = self.scene.render.resolution_x
+        height = self.scene.render.resolution_y
+
         if self.is_stereo:
             nameL = name + '_L'
             nameR = name + '_R'
-            if nameL in bpy.data.images:
-                bpy.data.images.remove(bpy.data.images[nameL])
-            if nameR in bpy.data.images:
-                bpy.data.images.remove(bpy.data.images[nameR])
 
-            if self.seamless and direction in {'right', 'left'}:
-                # If rendering for VR, render the side images separately to avoid seams
+            # To be safe and fast at high resolutions, and to avoid multi-view buffer complexities,
+            # we render each eye separately by manually offsetting the camera.
+            self.scene.render.use_multiview = False
+            tmp_loc = self.camera.location.copy()
 
-                self.scene.render.use_multiview = False
-                tmp_loc = list(self.camera.location)
-                camera_angle = self.direction_offsets['front'][2]
-                self.camera.location = [tmp_loc[0]+(0.5*self.IPD*cos(camera_angle)),\
-                                        tmp_loc[1]+(0.5*self.IPD*sin(camera_angle)),\
-                                        tmp_loc[2]]
+            # Get camera orientation for IPD offset
+            # We use the world matrix to correctly offset regardless of rotation
+            mat = self.camera.matrix_world
+            right_vec = mat.to_3x3() @ [1.0, 0.0, 0.0]
 
-                if self.save_intermediate:
-                    pathL = os.path.join(self.intermediate_path, face_name_base + "_L" + self.tmpfext)
-                else:
-                    pathL = os.path.join(self.tmpdir, nameL + self.tmpfext)
+            # Left eye
+            self.camera.location = tmp_loc - (right_vec * (0.5 * self.IPD))
+            bpy.ops.render.render()
+            renderedImageL = self.get_image_from_render(nameL, width, height)
 
-                self.scene.render.filepath = pathL
-                bpy.ops.render.render(write_still=True)
-                if not self.save_intermediate:
-                    self.createdFiles.add(pathL)
+            if self.save_intermediate:
+                pathL = os.path.join(self.intermediate_path, face_name_base + "_L" + self.tmpfext)
+                renderedImageL.file_format = 'OPEN_EXR'
+                renderedImageL.filepath_raw = pathL
+                renderedImageL.save()
 
-                renderedImageL = bpy.data.images.load(pathL)
-                renderedImageL.name = nameL
+            # Right eye
+            self.camera.location = tmp_loc + (right_vec * (0.5 * self.IPD))
+            bpy.ops.render.render()
+            renderedImageR = self.get_image_from_render(nameR, width, height)
 
-                self.camera.location = [tmp_loc[0]-(0.5*self.IPD*cos(camera_angle)),\
-                                        tmp_loc[1]-(0.5*self.IPD*sin(camera_angle)),\
-                                        tmp_loc[2]]
+            if self.save_intermediate:
+                pathR = os.path.join(self.intermediate_path, face_name_base + "_R" + self.tmpfext)
+                renderedImageR.file_format = 'OPEN_EXR'
+                renderedImageR.filepath_raw = pathR
+                renderedImageR.save()
 
-                if self.save_intermediate:
-                    pathR = os.path.join(self.intermediate_path, face_name_base + "_R" + self.tmpfext)
-                else:
-                    pathR = os.path.join(self.tmpdir, nameR + self.tmpfext)
-
-                self.scene.render.filepath = pathR
-                bpy.ops.render.render(write_still=True)
-                if not self.save_intermediate:
-                    self.createdFiles.add(pathR)
-
-                renderedImageR = bpy.data.images.load(pathR)
-                renderedImageR.name = nameR
-
-                self.scene.render.use_multiview = True
-                self.camera.location = tmp_loc
-
-            else:
-                if name in bpy.data.images:
-                    bpy.data.images.remove(bpy.data.images[name])
-                if nameL in bpy.data.images:
-                    bpy.data.images.remove(bpy.data.images[nameL])
-                if nameR in bpy.data.images:
-                    bpy.data.images.remove(bpy.data.images[nameR])
-
-                pathMono = os.path.join(self.tmpdir, name + self.tmpfext)
-                self.scene.render.filepath = pathMono
-                bpy.ops.render.render(write_still=True)
-                self.createdFiles.add(pathMono)
-
-                renderedImage = bpy.data.images.load(pathMono)
-                renderedImage.name = name
-                renderedImage.colorspace_settings.name = 'Linear' if bpy.app.version < (4, 0, 0) else 'Linear Rec.709'
-
-                # Split the render into two images
-                imageLen = len(renderedImage.pixels)
-                renderedImageL = bpy.data.images.new(nameL, self.scene.render.resolution_x, self.scene.render.resolution_y, float_buffer=self.is_float, alpha=self.has_alpha)
-                renderedImageR = bpy.data.images.new(nameR, self.scene.render.resolution_x, self.scene.render.resolution_y, float_buffer=self.is_float, alpha=self.has_alpha)
-
-                buff = np.empty((imageLen,), dtype=np.float32)
-                renderedImage.pixels.foreach_get(buff)
-                if self.seamless and direction == 'back':
-                    renderedImageL.pixels.foreach_set(buff[imageLen//2:])
-                    renderedImageR.pixels.foreach_set(buff[:imageLen//2])
-                else:
-                    renderedImageR.pixels.foreach_set(buff[imageLen//2:])
-                    renderedImageL.pixels.foreach_set(buff[:imageLen//2])
-
-                renderedImageL.update()
-                renderedImageR.update()
-
-                if self.save_intermediate:
-                    renderedImageL.file_format = 'OPEN_EXR'
-                    renderedImageL.filepath_raw = os.path.join(self.intermediate_path, face_name_base + "_L" + self.tmpfext)
-                    renderedImageL.save()
-                    renderedImageR.file_format = 'OPEN_EXR'
-                    renderedImageR.filepath_raw = os.path.join(self.intermediate_path, face_name_base + "_R" + self.tmpfext)
-                    renderedImageR.save()
-
-                renderedImageL.pack()
-                renderedImageR.pack()
-                bpy.data.images.remove(renderedImage)
+            # Restore
+            self.scene.render.use_multiview = True
+            self.camera.location = tmp_loc
         else:
             if name in bpy.data.images:
                 bpy.data.images.remove(bpy.data.images[name])
 
+            bpy.ops.render.render()
+            renderedImageL = self.get_image_from_render(name, width, height)
+
             if self.save_intermediate:
                 pathMono = os.path.join(self.intermediate_path, face_name_base + self.tmpfext)
-            else:
-                pathMono = os.path.join(self.tmpdir, name + self.tmpfext)
+                renderedImageL.file_format = 'OPEN_EXR'
+                renderedImageL.filepath_raw = pathMono
+                renderedImageL.save()
 
-            self.scene.render.filepath = pathMono
-            bpy.ops.render.render(write_still=True)
-            if not self.save_intermediate:
-                self.createdFiles.add(pathMono)
-
-            renderedImageL = bpy.data.images.load(pathMono)
-            renderedImageL.name = name
             renderedImageR = None
 
         self.scene.render.filepath = org_filepath
@@ -769,18 +733,8 @@ class Renderer:
         return renderedImageL, renderedImageR
 
 
-    def render_images(self):
-
-        # update focus distance if focus object is set
-        if self.camera.data.dof.use_dof and self.camera_origin.data.dof.focus_object is not None:
-            focus_location = self.camera_origin.data.dof.focus_object.matrix_world.translation
-            icm = self.camera_origin.matrix_world.inverted_safe()
-            self.camera.data.dof.focus_distance = abs((icm @ focus_location).z)
-
-        # Render the images for every direction
-        image_list_l = []
-        image_list_r = []
-
+    def get_render_directions(self):
+        """ Get the list of directions to render based on current settings """
         directions = ['front']
         if not self.no_side_images:
             directions += ['left', 'right']
@@ -788,9 +742,26 @@ class Renderer:
             directions += ['bottom', 'top']
         if not self.no_back_image:
             directions += ['back']
+        return list(reversed(directions))
+
+    def prepare_render(self):
+        """ Prepare camera and direction offsets before rendering """
+        # update focus distance if focus object is set
+        if self.camera.data.dof.use_dof and self.camera_origin.data.dof.focus_object is not None:
+            focus_location = self.camera_origin.data.dof.focus_object.matrix_world.translation
+            icm = self.camera_origin.matrix_world.inverted_safe()
+            self.camera.data.dof.focus_distance = abs((icm @ focus_location).z)
 
         self.direction_offsets = self.find_direction_offsets()
-        for direction in reversed(directions): # I want the results of the front camera to remain in the render window... just that.
+
+    def render_images(self):
+        """ Original non-generator version for backward compatibility """
+        self.prepare_render()
+        image_list_l = []
+        image_list_r = []
+        directions = self.get_render_directions()
+
+        for direction in directions:
             self.set_camera_direction(direction)
             imgl, imgr = self.render_image(direction)
             image_list_l.insert(0, imgl)
@@ -799,12 +770,9 @@ class Renderer:
         return image_list_l, image_list_r
 
 
-    def render_and_save(self):
-
+    def stitch_and_save(self, imageList, imageList2):
+        """ Stitch the rendered faces and save the final image """
         frame_step = self.scene.frame_step
-
-        # Render the images and return their names
-        imageList, imageList2 = self.render_images()
 
         if self.skip_stitching:
             for img in imageList:
@@ -878,3 +846,7 @@ class Renderer:
 
         bpy.data.images.remove(imageResult)
 
+    def render_and_save(self):
+        """ One-shot render and save (Legacy/Synchronous) """
+        imageList, imageList2 = self.render_images()
+        self.stitch_and_save(imageList, imageList2)
