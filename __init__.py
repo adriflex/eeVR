@@ -19,18 +19,8 @@ from .renderer import Renderer
 import bpy
 from bpy.types import Context, Operator, Panel
 
-bl_info = {
-    "name": "eeVR",
-    "description": "Render in different projections using Eevee engine",
-    "author": "EternalTrail",
-    "version": (1, 1, 0),
-    "blender": (5, 0, 0),
-    "location": "3D View > Sidebar > eeVR Tab",
-    "wiki_url": "https://github.com/EternalTrail/eeVR",
-    "tracker_url": "https://github.com/EternalTrail/eeVR/issues",
-    "support": "COMMUNITY",
-    "category": "Render",
-}
+# Note: bl_info has been moved to bl_extension.toml to support Blender 5.0 Extensions.
+# This prevents naming conflicts with folders containing dashes when installed as a legacy addon.
 
 
 def has_invalid_condition(self : 'Operator', context : 'Context'):
@@ -194,7 +184,12 @@ class RenderPanel(Panel):
 
         props : Properties = context.scene.eeVR
         addon_id = __package__ if __package__ else __name__.partition('.')[0]
-        addon_prefs = context.preferences.addons[addon_id].preferences
+        try:
+            addon_prefs = context.preferences.addons[addon_id].preferences
+        except KeyError:
+            # Fallback if addon is not enabled or named differently
+            return
+
         # Draw the buttons for each of the rendering operators
         layout = self.layout
         col = layout.column()
@@ -473,8 +468,7 @@ class Properties(bpy.types.PropertyGroup):
 
 
 class Preferences(bpy.types.AddonPreferences):
-    # this must match the addon name, use '__package__'
-    # when defining this in a submodule of a python package.
+    # this must match the addon name/id. Using __package__ is robust for both Extension and Legacy.
     bl_idname = __package__
 
     remain_temporalies: bpy.props.BoolProperty(
