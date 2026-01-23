@@ -534,8 +534,11 @@ class Renderer:
             batch.draw(self.shader)
 
             # Read the resulting pixels into a buffer
-            buffer = fb.read_color(0, 0, width, height, 4, 0, 'FLOAT', data=None)
-            buffer.dimensions = width * height * 4
+            buffer = fb.read_color(0, 0, width, height, 4, 0, 'FLOAT')
+            try:
+                buffer.dimensions = width * height * 4
+            except:
+                pass
 
         # Unload the offscreen texture
         offscreen.free()
