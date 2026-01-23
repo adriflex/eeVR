@@ -41,93 +41,115 @@ def has_invalid_condition(self : 'Operator', context : 'Context'):
     return False
 
 
-class RenderImage(Operator):
-    """Render out the animation"""
+class RenderBase:
+    """ Base class for modal rendering logic """
 
-    bl_idname = 'eevr.render_image'
-    bl_label = "Render a single frame"
+    def init_render(self, context, is_animation):
+        self.is_animation = is_animation
+        self.renderer = Renderer(context, is_animation)
+        self.frame_start = context.scene.frame_current if not is_animation else context.scene.frame_start
+        self.frame_end = context.scene.frame_current if not is_animation else context.scene.frame_end
+        context.scene.frame_set(self.frame_start)
 
-    def execute(self, context):
-        print("eeVR: execute")
+        self.state = 'PREPARE'
+        self.directions = []
+        self.image_list_l = []
+        self.image_list_r = []
+        self.total_time_start = time.time()
 
-        if has_invalid_condition(self, context):
-            return {'FINISHED'}
+        wm = context.window_manager
+        self.timer = wm.event_timer_add(0.1, window=context.window)
+        wm.modal_handler_add(self)
 
-        renderer = Renderer(context, False)
-        now = time.time()
-        try:
-            renderer.render_and_save()
-        finally:
-            renderer.clean_up(context)
-
-        print(f"eeVR: {round(time.time() - now, 2)} seconds")
-
-        return {'FINISHED'}
-
-
-class RenderAnimation(Operator):
-    """Render out the animation"""
-
-    bl_idname = 'eevr.render_animation'
-    bl_label = "Render the animation"
-
-    def __del__(self):
-        print("eeVR: end")
-
-    def modal(self, context, event):
+    def modal_logic(self, context, event):
         if event.type in {'ESC'}:
             self.cancel(context)
             return {'CANCELLED'}
 
         if event.type == 'TIMER':
             wm = context.window_manager
-            wm.event_timer_remove(self.timer)
 
             if context.scene.eeVR.cancel:
                 self.cancel(context)
                 return {'CANCELLED'}
 
-            if context.scene.frame_current <= self.frame_end:
-                print(f"eeVR: Rendering frame {context.scene.frame_current}")
-                now = time.time()
-                try:
-                    self.renderer.render_and_save()
-                except Exception as e:
+            if self.state == 'PREPARE':
+                print(f"eeVR: Preparing frame {context.scene.frame_current}")
+                self.renderer.prepare_render()
+                self.directions = self.renderer.get_render_directions()
+                self.image_list_l = []
+                self.image_list_r = []
+                self.state = 'RENDERING_FACES'
+                return {'RUNNING_MODAL'}
+
+            elif self.state == 'RENDERING_FACES':
+                if self.directions:
+                    direction = self.directions.pop(0)
+                    print(f"eeVR: Rendering {direction}")
+                    self.renderer.set_camera_direction(direction)
+                    imgl, imgr = self.renderer.render_image(direction)
+                    self.image_list_l.insert(0, imgl)
+                    self.image_list_r.insert(0, imgr)
+                else:
+                    self.state = 'STITCHING'
+                return {'RUNNING_MODAL'}
+
+            elif self.state == 'STITCHING':
+                print(f"eeVR: Stitching and saving")
+                self.renderer.stitch_and_save(self.image_list_l, self.image_list_r)
+
+                if self.is_animation and context.scene.frame_current <= self.frame_end:
+                    self.state = 'PREPARE'
+                else:
+                    print(f"eeVR: Finished in {round(time.time() - self.total_time_start, 2)} seconds")
                     self.clean(context)
-                    raise e
-                print(f"eeVR: {round(time.time() - now, 2)} seconds")
-                self.timer = wm.event_timer_add(0.1, window=context.window)
-            else:
-                self.clean(context)
-                return {'FINISHED'}
+                    wm.event_timer_remove(self.timer)
+                    return {'FINISHED'}
 
         return {'PASS_THROUGH'}
-
-    def execute(self, context):
-        print("eeVR: execute")
-
-        if has_invalid_condition(self, context):
-            return {'FINISHED'}
-
-        context.scene.eeVR.cancel = False
-
-        self.renderer = Renderer(context, True)
-
-        self.frame_end = context.scene.frame_end
-        frame_start = context.scene.frame_start
-        context.scene.frame_set(frame_start)
-        wm = context.window_manager
-        self.timer = wm.event_timer_add(0.1, window=context.window)
-        wm.modal_handler_add(self)
-        return {'RUNNING_MODAL'}
 
     def cancel(self, context):
         print("eeVR: cancel")
         self.clean(context)
+        context.window_manager.event_timer_remove(self.timer)
 
     def clean(self, context):
         self.renderer.clean_up(context)
         context.scene.eeVR.cancel = True
+
+
+class RenderImage(Operator, RenderBase):
+    """Render a single frame"""
+
+    bl_idname = 'eevr.render_image'
+    bl_label = "Render a single frame"
+
+    def modal(self, context, event):
+        return self.modal_logic(context, event)
+
+    def execute(self, context):
+        if has_invalid_condition(self, context):
+            return {'FINISHED'}
+        context.scene.eeVR.cancel = False
+        self.init_render(context, False)
+        return {'RUNNING_MODAL'}
+
+
+class RenderAnimation(Operator, RenderBase):
+    """Render out the animation"""
+
+    bl_idname = 'eevr.render_animation'
+    bl_label = "Render the animation"
+
+    def modal(self, context, event):
+        return self.modal_logic(context, event)
+
+    def execute(self, context):
+        if has_invalid_condition(self, context):
+            return {'FINISHED'}
+        context.scene.eeVR.cancel = False
+        self.init_render(context, True)
+        return {'RUNNING_MODAL'}
 
 
 class Cancel(Operator):
