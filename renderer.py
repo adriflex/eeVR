@@ -642,7 +642,12 @@ class Renderer:
         name = f'temp_img_store_{os.getpid()}_{direction}'
         org_filepath = self.scene.render.filepath
         org_file_format = self.scene.render.image_settings.file_format
+        org_color_depth = self.scene.render.image_settings.color_depth
+        org_exr_codec = self.scene.render.image_settings.exr_codec
+
         self.scene.render.image_settings.file_format = self.tmpfile_format
+        self.scene.render.image_settings.color_depth = '32' if self.is_float else '16'
+        self.scene.render.image_settings.exr_codec = 'DWAA' # Good balance of quality/compression
 
         frame_num = self.scene.frame_current
         face_name_base = f"frame_{frame_num:06d}_{direction}"
@@ -665,36 +670,35 @@ class Renderer:
                                         tmp_loc[1]+(0.5*self.IPD*sin(camera_angle)),\
                                         tmp_loc[2]]
 
-                pathL = os.path.join(self.tmpdir, nameL + self.tmpfext)
+                if self.save_intermediate:
+                    pathL = os.path.join(self.intermediate_path, face_name_base + "_L" + self.tmpfext)
+                else:
+                    pathL = os.path.join(self.tmpdir, nameL + self.tmpfext)
+
                 self.scene.render.filepath = pathL
                 bpy.ops.render.render(write_still=True)
-                self.createdFiles.add(pathL)
+                if not self.save_intermediate:
+                    self.createdFiles.add(pathL)
+
                 renderedImageL = bpy.data.images.load(pathL)
                 renderedImageL.name = nameL
-
-                if self.save_intermediate:
-                    renderedImageL.file_format = 'OPEN_EXR'
-                    renderedImageL.filepath_raw = os.path.join(self.intermediate_path, face_name_base + "_L" + self.tmpfext)
-                    renderedImageL.update()
-                    renderedImageL.save()
 
                 self.camera.location = [tmp_loc[0]-(0.5*self.IPD*cos(camera_angle)),\
                                         tmp_loc[1]-(0.5*self.IPD*sin(camera_angle)),\
                                         tmp_loc[2]]
 
-                pathR = os.path.join(self.tmpdir, nameR + self.tmpfext)
+                if self.save_intermediate:
+                    pathR = os.path.join(self.intermediate_path, face_name_base + "_R" + self.tmpfext)
+                else:
+                    pathR = os.path.join(self.tmpdir, nameR + self.tmpfext)
+
                 self.scene.render.filepath = pathR
                 bpy.ops.render.render(write_still=True)
-                print(pathR)
-                self.createdFiles.add(pathR)
+                if not self.save_intermediate:
+                    self.createdFiles.add(pathR)
+
                 renderedImageR = bpy.data.images.load(pathR)
                 renderedImageR.name = nameR
-
-                if self.save_intermediate:
-                    renderedImageR.file_format = 'OPEN_EXR'
-                    renderedImageR.filepath_raw = os.path.join(self.intermediate_path, face_name_base + "_R" + self.tmpfext)
-                    renderedImageR.update()
-                    renderedImageR.save()
 
                 self.scene.render.use_multiview = True
                 self.camera.location = tmp_loc
@@ -706,18 +710,21 @@ class Renderer:
                     bpy.data.images.remove(bpy.data.images[nameL])
                 if nameR in bpy.data.images:
                     bpy.data.images.remove(bpy.data.images[nameR])
+
                 pathMono = os.path.join(self.tmpdir, name + self.tmpfext)
                 self.scene.render.filepath = pathMono
                 bpy.ops.render.render(write_still=True)
                 self.createdFiles.add(pathMono)
-                renderedImage =  bpy.data.images.load(pathMono)
+
+                renderedImage = bpy.data.images.load(pathMono)
                 renderedImage.name = name
                 renderedImage.colorspace_settings.name = 'Linear' if bpy.app.version < (4, 0, 0) else 'Linear Rec.709'
+
+                # Split the render into two images
                 imageLen = len(renderedImage.pixels)
                 renderedImageL = bpy.data.images.new(nameL, self.scene.render.resolution_x, self.scene.render.resolution_y, float_buffer=self.is_float, alpha=self.has_alpha)
                 renderedImageR = bpy.data.images.new(nameR, self.scene.render.resolution_x, self.scene.render.resolution_y, float_buffer=self.is_float, alpha=self.has_alpha)
 
-                # Split the render into two images
                 buff = np.empty((imageLen,), dtype=np.float32)
                 renderedImage.pixels.foreach_get(buff)
                 if self.seamless and direction == 'back':
@@ -727,14 +734,15 @@ class Renderer:
                     renderedImageR.pixels.foreach_set(buff[imageLen//2:])
                     renderedImageL.pixels.foreach_set(buff[:imageLen//2])
 
+                renderedImageL.update()
+                renderedImageR.update()
+
                 if self.save_intermediate:
                     renderedImageL.file_format = 'OPEN_EXR'
                     renderedImageL.filepath_raw = os.path.join(self.intermediate_path, face_name_base + "_L" + self.tmpfext)
-                    renderedImageL.update()
                     renderedImageL.save()
                     renderedImageR.file_format = 'OPEN_EXR'
                     renderedImageR.filepath_raw = os.path.join(self.intermediate_path, face_name_base + "_R" + self.tmpfext)
-                    renderedImageR.update()
                     renderedImageR.save()
 
                 renderedImageL.pack()
@@ -744,22 +752,24 @@ class Renderer:
             if name in bpy.data.images:
                 bpy.data.images.remove(bpy.data.images[name])
 
-            pathMono = os.path.join(self.tmpdir, name + self.tmpfext)
+            if self.save_intermediate:
+                pathMono = os.path.join(self.intermediate_path, face_name_base + self.tmpfext)
+            else:
+                pathMono = os.path.join(self.tmpdir, name + self.tmpfext)
+
             self.scene.render.filepath = pathMono
             bpy.ops.render.render(write_still=True)
-            self.createdFiles.add(pathMono)
+            if not self.save_intermediate:
+                self.createdFiles.add(pathMono)
+
             renderedImageL = bpy.data.images.load(pathMono)
             renderedImageL.name = name
             renderedImageR = None
 
-            if self.save_intermediate:
-                renderedImageL.file_format = 'OPEN_EXR'
-                renderedImageL.filepath_raw = os.path.join(self.intermediate_path, face_name_base + self.tmpfext)
-                renderedImageL.update()
-                renderedImageL.save()
-
         self.scene.render.filepath = org_filepath
         self.scene.render.image_settings.file_format = org_file_format
+        self.scene.render.image_settings.color_depth = org_color_depth
+        self.scene.render.image_settings.exr_codec = org_exr_codec
         return renderedImageL, renderedImageR
 
 
