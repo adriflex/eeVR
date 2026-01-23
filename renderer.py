@@ -25,11 +25,11 @@ commdef = '''
 #define EXTRUSION   %f
 #define INTRUSION   %f
 
-const float SIDEHTEXSCALE = 1 / (SIDEFRAC - INTRUSION);
-const float SIDEVTEXSCALE = 1 / (1 + 2 * SMARGIN);
-const float TBVTEXSCALE   = 1 / (TBFRAC - INTRUSION);
-const float HTEXSCALE     = 1 / (1 + 2 * (HMARGIN + EXTRUSION));
-const float VTEXSCALE     = 1 / (1 + 2 * (VMARGIN + EXTRUSION));
+const float SIDEHTEXSCALE = 1.0 / max(SIDEFRAC - INTRUSION, 0.0001);
+const float SIDEVTEXSCALE = 1.0 / max(1.0 + 2.0 * SMARGIN, 0.0001);
+const float TBVTEXSCALE   = 1.0 / max(TBFRAC - INTRUSION, 0.0001);
+const float HTEXSCALE     = 1.0 / max(1.0 + 2.0 * (HMARGIN + EXTRUSION), 0.0001);
+const float VTEXSCALE     = 1.0 / max(1.0 + 2.0 * (VMARGIN + EXTRUSION), 0.0001);
 const float ACTUALHMARGIN = HMARGIN * HTEXSCALE;
 const float ACTUALVMARGIN = VMARGIN * VTEXSCALE;
 
@@ -372,7 +372,7 @@ class Renderer:
          + ('' if self.no_side_images else fetch_sides + (blend_seam_sides if vmargin > 0.0 else ''))\
          + ('' if self.no_back_image else (fetch_back % ((blend_seam_back_h if hmargin > 0.0 else '') + (blend_seam_back_v if vmargin > 0.0 else ''))))\
          + (fetch_front % ((blend_seam_front_h if hmargin > 0.0 or ext_front_view else '') + (blend_seam_front_v if vmargin > 0.0 or ext_front_view else '')))\
-         + '}'
+         + '\n    fragColor.a = 1.0;\n}'
 
         shader_info = gpu.types.GPUShaderCreateInfo()
         vert_out = gpu.types.GPUStageInterfaceInfo("eevr")
@@ -545,6 +545,7 @@ class Renderer:
             imageRes.pixels.foreach_set(buffer.to_list())
         except:
             imageRes.pixels.foreach_set(buffer)
+        imageRes.update()
         return imageRes
 
 
@@ -800,8 +801,6 @@ class Renderer:
                 for img in imageList2:
                     if img: bpy.data.images.remove(img)
 
-            if self.is_animation:
-                self.scene.frame_set(self.scene.frame_current+frame_step)
             return
 
         # Determine final image path and name using Blender's frame_path
@@ -847,11 +846,9 @@ class Renderer:
         # Ensure output directory exists
         os.makedirs(os.path.dirname(final_image_path), exist_ok=True)
 
+        imageResult.update()
         imageResult.filepath_raw = final_image_path
         imageResult.save()
-
-        if self.is_animation:
-            self.scene.frame_set(self.scene.frame_current+frame_step)
 
         print(f'''Saved '{imageResult.filepath_raw} float:{self.is_float} alpha:{self.has_alpha}'
  Time : {round(time.time() - start_time, 2)} seconds (Saving : {round(time.time() - save_start_time, 2)} seconds)
