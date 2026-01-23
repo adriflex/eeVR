@@ -4,7 +4,6 @@ import time
 import gpu
 import numpy as np
 from math import sin, cos, tan, ceil, degrees, pi
-from datetime import datetime
 from gpu_extras.batch import batch_for_shader
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
@@ -25,11 +24,11 @@ commdef = '''
 #define EXTRUSION   %f
 #define INTRUSION   %f
 
-const float SIDEHTEXSCALE = 1 / (SIDEFRAC - INTRUSION);
-const float SIDEVTEXSCALE = 1 / (1 + 2 * SMARGIN);
-const float TBVTEXSCALE   = 1 / (TBFRAC - INTRUSION);
-const float HTEXSCALE     = 1 / (1 + 2 * (HMARGIN + EXTRUSION));
-const float VTEXSCALE     = 1 / (1 + 2 * (VMARGIN + EXTRUSION));
+const float SIDEHTEXSCALE = 1 / max(SIDEFRAC - INTRUSION, 0.0001);
+const float SIDEVTEXSCALE = 1 / max(1 + 2 * SMARGIN, 0.0001);
+const float TBVTEXSCALE   = 1 / max(TBFRAC - INTRUSION, 0.0001);
+const float HTEXSCALE     = 1 / max(1 + 2 * (HMARGIN + EXTRUSION), 0.0001);
+const float VTEXSCALE     = 1 / max(1 + 2 * (VMARGIN + EXTRUSION), 0.0001);
 const float ACTUALHMARGIN = HMARGIN * HTEXSCALE;
 const float ACTUALVMARGIN = VMARGIN * VTEXSCALE;
 
@@ -254,7 +253,7 @@ void main() {
 
 class Renderer:
 
-    def __init__(self, context : bpy.types.Context, is_animation = False, folder = ''):
+    def __init__(self, context : bpy.types.Context, is_animation = False):
 
         # Check if the file is saved or not, can cause errors when not saved
         if not bpy.data.is_saved:
@@ -265,11 +264,10 @@ class Renderer:
 
         # Set internal variables for the class
         self.scene = context.scene
-        # Get the file extension
-        self.fext = os.path.splitext(bpy.context.scene.render.frame_path(frame=self.scene.frame_current))[-1]
-        self.fformat = bpy.context.scene.render.image_settings.file_format.format()
-        self.color_mode = bpy.context.scene.render.image_settings.color_mode
-        self.is_float = True if self.fformat in ['CINEON', 'DPX', 'OPEN_EXR_MULTILAYER', 'OPEN_EXR', 'HDR'] else False
+        self.fformat = self.scene.render.image_settings.file_format
+        self.color_mode = self.scene.render.image_settings.color_mode
+        # Use float buffer for formats that support higher bit depth or to avoid banding in PNG
+        self.is_float = True if self.fformat in ['CINEON', 'DPX', 'OPEN_EXR_MULTILAYER', 'OPEN_EXR', 'HDR', 'PNG', 'TIFF'] else False
         self.has_alpha = True if self.color_mode == 'RGBA' else False
         # save original active object
         self.viewlayer_active_object_origin = context.view_layer.objects.active
@@ -297,9 +295,7 @@ class Renderer:
         # transfer clip_start & clip_end parameter to new camera
         self.camera.data.clip_start = self.camera_origin.data.clip_start
         self.camera.data.clip_end = self.camera_origin.data.clip_end
-        self.path = bpy.path.abspath(context.preferences.filepaths.render_output_directory)
-        if not self.path:
-            self.path = bpy.path.abspath("//")
+
         self.tmpdir = bpy.path.abspath(context.preferences.filepaths.temporary_directory if context.preferences.filepaths.temporary_directory else
                                        bpy.app.tempdir)
         # Force OPEN_EXR for intermediate files as requested for better quality
@@ -389,16 +385,15 @@ class Renderer:
         shader_info.fragment_source(frag_shader)
         self.shader = gpu.shader.create_from_info(shader_info)
 
-        # Set the image name to the current time
-        self.start_time = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
-        # get folder name from outside
-        self.folder_name = folder
-
         # Intermediate faces settings
         self.save_intermediate = props.saveIntermediate
         self.skip_stitching = props.skipStitching
         if self.save_intermediate:
-            self.intermediate_path = os.path.join(self.path, self.folder_name, props.intermediateSubdir)
+            # For intermediate faces, use a folder relative to the final output filepath
+            output_path = bpy.path.abspath(self.scene.render.filepath)
+            if not output_path.endswith(('/', '\\')):
+                output_path = os.path.dirname(output_path)
+            self.intermediate_path = os.path.join(output_path, props.intermediateSubdir)
             os.makedirs(self.intermediate_path, exist_ok=True)
 
         # Get initial camera and output information
@@ -536,10 +531,6 @@ class Renderer:
 
             # Read the resulting pixels into a buffer
             buffer = fb.read_color(0, 0, width, height, 4, 0, 'FLOAT')
-            try:
-                buffer.dimensions = width * height * 4
-            except:
-                pass
 
         # Unload the offscreen texture
         offscreen.free()
@@ -555,7 +546,11 @@ class Renderer:
         imageRes = bpy.data.images[outputName]
         imageRes.file_format = self.fformat
         imageRes.scale(width, height)
-        imageRes.pixels.foreach_set(buffer)
+
+        # In Blender 4.0+, buffer.to_list() followed by flattening is more reliable
+        # to avoid shape mismatches or issues with foreach_set on direct gpu buffers
+        imageRes.pixels.foreach_set(np.array(buffer.to_list()).ravel())
+
         return imageRes
 
 
@@ -803,53 +798,6 @@ class Renderer:
         return image_list_l, image_list_r
 
 
-    def stitch_and_save_custom(self, imageList, imageList2, frame_id):
-        """Helper to stitch provided image lists and save."""
-
-        image_name = f"frame_{frame_id}{self.fext}"
-
-        if self.is_stereo:
-            if not imageList or not imageList2:
-                print(f"Missing images for stereo frame {frame_id}")
-                return
-
-            leftImage = self.cubemap_to_panorama(imageList, "Render Left")
-            rightImage = self.cubemap_to_panorama(imageList2, "Render Right")
-
-            imageResult = bpy.data.images.new(image_name, leftImage.size[0], 2 * leftImage.size[1], float_buffer=self.is_float, alpha=self.has_alpha)
-            imageResult.file_format = self.fformat
-
-            img1arr = np.empty((leftImage.size[1], 4 * leftImage.size[0]), dtype=np.float32)
-            leftImage.pixels.foreach_get(img1arr.ravel())
-            img2arr = np.empty((rightImage.size[1], 4 * rightImage.size[0]), dtype=np.float32)
-            rightImage.pixels.foreach_get(img2arr.ravel())
-
-            if self.sidebyside:
-                imageResult.scale(2*leftImage.size[0], leftImage.size[1])
-                if self.use_sidebyside_crosseyed:
-                    imageResult.pixels.foreach_set(np.concatenate((img1arr, img2arr), axis=1).ravel())
-                else:
-                    imageResult.pixels.foreach_set(np.concatenate((img2arr, img1arr), axis=1).ravel())
-            else:
-                imageResult.scale(leftImage.size[0], 2*leftImage.size[1])
-                # Note: self.scene.eeVR might not be accurate if we changed settings since rendering faces
-                if self.scene.eeVR.isTopRightEye:
-                    imageResult.pixels.foreach_set(np.concatenate((img2arr, img1arr)).ravel())
-                else:
-                    imageResult.pixels.foreach_set(np.concatenate((img1arr, img2arr)).ravel())
-
-            bpy.data.images.remove(leftImage)
-            bpy.data.images.remove(rightImage)
-        else:
-            if not imageList:
-                print(f"Missing images for mono frame {frame_id}")
-                return
-            imageResult = self.cubemap_to_panorama(imageList, "RenderResult")
-
-        imageResult.filepath_raw = os.path.join(self.path, self.folder_name, image_name)
-        imageResult.save()
-        bpy.data.images.remove(imageResult)
-
     def render_and_save(self):
 
         frame_step = self.scene.frame_step
@@ -868,10 +816,8 @@ class Renderer:
                 self.scene.frame_set(self.scene.frame_current+frame_step)
             return
 
-        if self.is_animation:
-            image_name = f"frame{self.scene.frame_current:06d}{self.fext}"
-        else:
-            image_name = f"{os.path.splitext(bpy.path.basename(bpy.data.filepath))[0]} {self.start_time}{self.fext}"
+        final_filepath = self.scene.render.frame_path(frame=self.scene.frame_current)
+        os.makedirs(os.path.dirname(final_filepath), exist_ok=True)
 
         start_time = time.time()
         # Convert the rendered images to equirectangular projection image and save it to the disk
@@ -879,12 +825,14 @@ class Renderer:
             leftImage = self.cubemap_to_panorama(imageList, "Render Left")
             rightImage = self.cubemap_to_panorama(imageList2, "Render Right")
 
-            # If it doesn't already exist, create an image object to store the resulting render
-            if not image_name in bpy.data.images.keys():
-                imageResult = bpy.data.images.new(image_name, leftImage.size[0], 2 * leftImage.size[1], float_buffer=self.is_float, alpha=self.has_alpha)
+            # Create a temporary image name for merging
+            temp_name = "eeVR_temp_merge"
+            if temp_name in bpy.data.images:
+                bpy.data.images.remove(bpy.data.images[temp_name])
 
-            imageResult = bpy.data.images[image_name]
+            imageResult = bpy.data.images.new(temp_name, leftImage.size[0], 2 * leftImage.size[1], float_buffer=self.is_float, alpha=self.has_alpha)
             imageResult.file_format = self.fformat
+
             img1arr = np.empty((leftImage.size[1], 4 * leftImage.size[0]), dtype=np.float32)
             leftImage.pixels.foreach_get(img1arr.ravel())
             img2arr = np.empty((rightImage.size[1], 4 * rightImage.size[0]), dtype=np.float32)
@@ -908,138 +856,24 @@ class Renderer:
             imageResult = self.cubemap_to_panorama(imageList, "RenderResult")
 
         save_start_time = time.time()
-        if self.is_animation:
-            imageResult.filepath_raw = os.path.join(self.path, self.folder_name, image_name)
-            imageResult.save()
-            self.scene.frame_set(self.scene.frame_current+frame_step)
-        else:
-            imageResult.filepath_raw = os.path.join(self.path, image_name)
-            imageResult.save()
 
-        print(f'''Saved '{imageResult.filepath_raw} float:{self.is_float} alpha:{self.has_alpha}'
+        # Handle 16-bit PNG and Color Management
+        org_color_depth = self.scene.render.image_settings.color_depth
+        if self.scene.render.image_settings.file_format == 'PNG':
+            self.scene.render.image_settings.color_depth = '16'
+
+        # Use save_render to apply color management (fix for dark PNGs)
+        imageResult.save_render(final_filepath, scene=self.scene)
+
+        # Restore original color depth
+        self.scene.render.image_settings.color_depth = org_color_depth
+
+        if self.is_animation:
+            self.scene.frame_set(self.scene.frame_current+frame_step)
+
+        print(f'''Saved '{final_filepath}' float:{self.is_float} alpha:{self.has_alpha}
  Time : {round(time.time() - start_time, 2)} seconds (Saving : {round(time.time() - save_start_time, 2)} seconds)
  ''')
 
         bpy.data.images.remove(imageResult)
 
-    def generate_uv_maps(self):
-        """Generates UV maps for each face to be used in the compositor."""
-
-        # 1. Create identity UV textures
-        size = 1024
-        identity_images = {}
-        directions = ['front', 'back', 'left', 'right', 'top', 'bottom']
-
-        # Black image for inactive faces
-        black_img = bpy.data.images.new("eeVR_black", size, size, float_buffer=True)
-        black_img.pixels.foreach_set([0.0] * (size * size * 4))
-
-        for d in directions:
-            img = bpy.data.images.new(f"eeVR_identity_{d}", size, size, float_buffer=True)
-            pixels = np.zeros(size * size * 4, dtype=np.float32)
-            for y in range(size):
-                for x in range(size):
-                    idx = (y * size + x) * 4
-                    pixels[idx] = x / (size - 1)
-                    pixels[idx+1] = y / (size - 1)
-                    pixels[idx+2] = 0.0
-                    pixels[idx+3] = 1.0
-            img.pixels.foreach_set(pixels)
-            identity_images[d] = img
-
-        # 2. Render UV Map for each direction
-        uv_maps = {}
-        for d in directions:
-            if d == 'back' and self.no_back_image: continue
-            if d in ('left', 'right') and self.no_side_images: continue
-            if d in ('top', 'bottom') and self.no_top_bottom_images: continue
-
-            # Prepare image list for cubemap_to_panorama
-            # Order in cubemap_to_panorama: Front, [Left, Right], [Bottom, Top], [Back]
-            # Wait, let's check cubemap_to_panorama order
-
-            img_list = []
-            # This follows the logic in cubemap_to_panorama
-            # Front is always first
-            img_list.append(identity_images['front'] if d == 'front' else black_img)
-
-            if not self.no_side_images:
-                img_list.append(identity_images['left'] if d == 'left' else black_img)
-                img_list.append(identity_images['right'] if d == 'right' else black_img)
-
-            if not self.no_top_bottom_images:
-                img_list.append(identity_images['bottom'] if d == 'bottom' else black_img)
-                img_list.append(identity_images['top'] if d == 'top' else black_img)
-
-            if not self.no_back_image:
-                img_list.append(identity_images['back'] if d == 'back' else black_img)
-
-            uv_map_img = self.cubemap_to_panorama(img_list, f"UV_Map_{d}")
-            uv_map_img.filepath_raw = os.path.join(self.path, self.folder_name, f"uv_map_{d}.exr")
-            uv_map_img.file_format = 'OPEN_EXR'
-            uv_map_img.save()
-            uv_maps[d] = uv_map_img.filepath_raw
-            # We don't remove uv_map_img yet, we might want it in Blender
-
-        # Cleanup
-        for img in identity_images.values():
-            bpy.data.images.remove(img)
-        bpy.data.images.remove(black_img)
-
-        return uv_maps
-
-def setup_compositor_template(context, uv_maps):
-    context.scene.use_nodes = True
-    tree = context.scene.node_tree
-
-    # Clear existing nodes? Better not, just add a new group or area
-    # Let's create a Frame to contain our nodes
-    frame = tree.nodes.new('NodeFrame')
-    frame.label = "eeVR Stitching Template"
-
-    last_mix = None
-    y_offset = 0
-
-    for d, path in uv_maps.items():
-        # Image node for the Face
-        face_node = tree.nodes.new('CompositorNodeImage')
-        face_node.label = f"Face {d.capitalize()}"
-        face_node.parent = frame
-        face_node.location = (0, y_offset)
-
-        # Image node for the UV Map
-        uv_node = tree.nodes.new('CompositorNodeImage')
-        uv_node.image = bpy.data.images.load(path)
-        uv_node.label = f"UV Map {d.capitalize()}"
-        uv_node.parent = frame
-        uv_node.location = (0, y_offset - 250)
-
-        # Map UV node
-        map_node = tree.nodes.new('CompositorNodeMapUV')
-        map_node.parent = frame
-        map_node.location = (300, y_offset - 100)
-
-        tree.links.new(face_node.outputs[0], map_node.inputs[0])
-        tree.links.new(uv_node.outputs[0], map_node.inputs[1])
-
-        if last_mix is None:
-            last_mix = map_node
-        else:
-            mix_node = tree.nodes.new('CompositorNodeMixRGB')
-            mix_node.blend_type = 'ADD' # Or MIX if we use alpha
-            mix_node.use_alpha = True
-            mix_node.parent = frame
-            mix_node.location = (600, y_offset)
-
-            tree.links.new(last_mix.outputs[0], mix_node.inputs[1])
-            tree.links.new(map_node.outputs[0], mix_node.inputs[2])
-            last_mix = mix_node
-
-        y_offset -= 500
-
-    # Output node
-    out_node = tree.nodes.new('CompositorNodeComposite')
-    out_node.parent = frame
-    out_node.location = (900, 0)
-    if last_mix:
-        tree.links.new(last_mix.outputs[0], out_node.inputs[0])
