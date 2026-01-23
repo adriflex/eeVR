@@ -114,16 +114,18 @@ class RenderAnimation(Operator):
 
         # knowing it's animation, creates folder outside vrrender class, pass folder name to it
         start_time = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
-        folder_name = f"{os.path.splitext(bpy.path.basename(bpy.data.filepath))[0]} {start_time}/"
+        folder_name = f"{os.path.splitext(bpy.path.basename(bpy.data.filepath))[0]} {start_time}"
         path = bpy.path.abspath(context.preferences.filepaths.render_output_directory)
-        os.makedirs(path+folder_name, exist_ok=True)
+        if not path: path = bpy.path.abspath("//")
+        full_path = os.path.join(path, folder_name)
+        os.makedirs(full_path, exist_ok=True)
         self.renderer = Renderer(context, True, folder_name)
 
         self.frame_end = context.scene.frame_end
         frame_start = context.scene.frame_start
         context.scene.frame_set(frame_start)
         wm = context.window_manager
-        self.timer = wm.event_timer_add(5, window=context.window)
+        self.timer = wm.event_timer_add(0.1, window=context.window)
         wm.modal_handler_add(self)
         return {'RUNNING_MODAL'}
 
@@ -147,16 +149,142 @@ class Cancel(Operator):
         return {'FINISHED'}
 
 
+class GenerateCompositorTemplate(Operator):
+    """Generate a compositor node tree for stitching"""
+
+    bl_idname = 'eevr.generate_compositor_template'
+    bl_label = "Generate Compositor Template"
+
+    def execute(self, context):
+        from .renderer import Renderer, setup_compositor_template
+
+        # Initialize renderer to get the correct resolution and shader
+        # Use folder name for template
+        start_time = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
+        folder_name = f"template_{start_time}"
+        path = bpy.path.abspath(context.preferences.filepaths.render_output_directory)
+        if not path: path = bpy.path.abspath("//")
+        os.makedirs(os.path.join(path, folder_name), exist_ok=True)
+
+        r = Renderer(context, False, folder_name)
+        try:
+            uv_maps = r.generate_uv_maps()
+            setup_compositor_template(context, uv_maps)
+            self.report({'INFO'}, f"Template generated in {folder_name}")
+        finally:
+            r.clean_up(context)
+
+        return {'FINISHED'}
+
+
+class StitchFolder(Operator):
+    """Stitch all frames in a folder"""
+
+    bl_idname = 'eevr.stitch_folder'
+    bl_label = "Stitch Folder"
+
+    directory: bpy.props.StringProperty(subtype='DIR_PATH')
+
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        from .renderer import Renderer
+        import re
+
+        if not self.directory:
+            self.report({'ERROR'}, "No directory selected")
+            return {'CANCELLED'}
+
+        files = os.listdir(self.directory)
+        # Group files by frame number
+        # Pattern: frame_(\d+)_(front|back|left|right|top|bottom)(_L|_R)?\.(png|exr|tga|...)
+        pattern = re.compile(r"frame_(\d+)_(\w+)(_L|_R)?\..*")
+
+        frames = {}
+        for f in files:
+            match = pattern.match(f)
+            if match:
+                frame_num = match.group(1)
+                direction = match.group(2)
+                eye = match.group(3) or ""
+
+                if frame_num not in frames:
+                    frames[frame_num] = {}
+                if eye not in frames[frame_num]:
+                    frames[frame_num][eye] = {}
+
+                frames[frame_num][eye][direction] = os.path.join(self.directory, f)
+
+        if not frames:
+            self.report({'ERROR'}, "No matching face images found in folder")
+            return {'CANCELLED'}
+
+        r = Renderer(context, True, "stitched/")
+        os.makedirs(os.path.join(r.path, r.folder_name), exist_ok=True)
+
+        try:
+            for frame_num in sorted(frames.keys()):
+                self.report({'INFO'}, f"Stitching frame {frame_num}")
+
+                eye_images = {}
+                for eye in frames[frame_num]:
+                    # Build image list in correct order for cubemap_to_panorama
+                    # Order: front, [left, right], [bottom, top], [back]
+                    dirs = ['front']
+                    if not r.no_side_images: dirs += ['left', 'right']
+                    if not r.no_top_bottom_images: dirs += ['bottom', 'top']
+                    if not r.no_back_image: dirs += ['back']
+
+                    img_list = []
+                    for d in dirs:
+                        if d in frames[frame_num][eye]:
+                            img_path = frames[frame_num][eye][d]
+                            try:
+                                img = bpy.data.images.load(img_path)
+                                img_list.append(img)
+                            except:
+                                self.report({'ERROR'}, f"Failed to load {img_path}")
+                                img = bpy.data.images.new(f"error_{d}", 8, 8)
+                                img_list.append(img)
+                        else:
+                            self.report({'WARNING'}, f"Missing direction {d} for frame {frame_num} {eye}")
+                            # Add a placeholder black image to maintain list order
+                            img = bpy.data.images.new(f"missing_{d}", 8, 8)
+                            img_list.append(img)
+
+                    eye_images[eye] = img_list
+
+                # Call stitching logic
+                # This is a bit tricky because render_and_save is designed for active rendering
+                # I'll need a way to just do the stitch part
+
+                # For now, let's manually do what render_and_save does but with our images
+                if r.is_stereo:
+                    left_list = eye_images.get("_L", [])
+                    right_list = eye_images.get("_R", [])
+                    # ... (Need to handle the stereo combine logic)
+                    # Actually, let's use a helper in Renderer
+                    r.stitch_and_save_custom(left_list, right_list, frame_num)
+                else:
+                    mono_list = eye_images.get("", [])
+                    r.stitch_and_save_custom(mono_list, None, frame_num)
+
+        finally:
+            r.clean_up(context)
+
+        return {'FINISHED'}
+
+
 class RenderPanel(Panel):
     """Render panel for VR rendering"""
 
     bl_idname = "EEVR_PT_render"
     bl_label = "eeVR"
-    bl_space_type = 'PROPERTIES'
-    bl_region_type = 'WINDOW'
-    bl_context = "render"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
     bl_category = "eeVR"
-    bl_options = {'DEFAULT_CLOSED'}
 
     COMPAT_ENGINES = {'BLENDER_RENDER', 'BLENDER_EEVEE', 'BLENDER_EEVEE_NEXT', 'BLENDER_WORKBENCH'}
 
@@ -198,6 +326,20 @@ class RenderPanel(Panel):
         if context.scene.render.use_multiview and props.get_hfov() > radians(180):
             col.prop(props, 'appliesParallaxForSideAndBack')
             col.label(icon='ERROR', text="eeVR cannot support stereo over 180° fov correctly.")
+
+        layout.separator()
+        col = layout.column(align=True)
+        col.label(text="Optimization & Control:")
+        col.prop(props, 'saveIntermediate')
+        if props.saveIntermediate:
+            col.prop(props, 'intermediateSubdir')
+            col.prop(props, 'skipStitching')
+
+        layout.separator()
+        col = layout.column(align=True)
+        col.operator(GenerateCompositorTemplate.bl_idname, icon='NODE_COMPOSITING')
+        col.operator(StitchFolder.bl_idname, icon='FILE_FOLDER')
+
         layout.separator()
         col = layout.column()
         col.operator(RenderImage.bl_idname, icon="RENDER_STILL", text="Render Image")
@@ -377,6 +519,24 @@ class Properties(bpy.types.PropertyGroup):
         default=True
     )
 
+    saveIntermediate: bpy.props.BoolProperty(
+        name="Save Intermediate Faces",
+        description="Save the individual face images (front, back, etc.) to a sub-folder",
+        default=False
+    )
+
+    skipStitching: bpy.props.BoolProperty(
+        name="Skip Stitching",
+        description="Only render the individual faces and skip the final panorama creation. Useful for very high resolutions",
+        default=False
+    )
+
+    intermediateSubdir: bpy.props.StringProperty(
+        name="Sub-folder Name",
+        description="Name of the sub-folder where intermediate faces will be saved",
+        default="faces"
+    )
+
     @staticmethod
     def snap_angle(src: float) -> float:
         if abs(src - radians(90)) < 0.000001:
@@ -450,5 +610,7 @@ register, unregister = bpy.utils.register_classes_factory((
     RenderImage,
     RenderAnimation,
     Cancel,
+    GenerateCompositorTemplate,
+    StitchFolder,
     Preferences,
 ))
