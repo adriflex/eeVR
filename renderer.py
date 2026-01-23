@@ -549,7 +549,8 @@ class Renderer:
 
         # In Blender 4.0+, buffer.to_list() followed by flattening is more reliable
         # to avoid shape mismatches or issues with foreach_set on direct gpu buffers
-        imageRes.pixels.foreach_set(np.array(buffer.to_list()).ravel())
+        # Explicitly use float32 to avoid "incorrect sequence item type: d" (double) error
+        imageRes.pixels.foreach_set(np.array(buffer.to_list(), dtype=np.float32).ravel())
 
         return imageRes
 
